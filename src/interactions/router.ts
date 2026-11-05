@@ -69,7 +69,7 @@ export async function routeInteraction(
     }
     throw new AppError('INVALID_INPUT', 'Это действие больше не доступно.');
   } catch (error) {
-    await reportFailure(interaction, services, error);
+    await reportFailure(interaction, services, asMissingOption(error) ?? error);
   }
 }
 
@@ -172,6 +172,23 @@ async function autocomplete(
     }
   }
   await interaction.respond(choices.slice(0, AUTOCOMPLETE_LIMIT));
+}
+
+/**
+ * Discord throws inside the handler when a required option is missing. That is an input problem,
+ * so it becomes a short user message instead of an internal error in the log.
+ */
+function asMissingOption(error: unknown): AppError | null {
+  if (
+    error instanceof Error &&
+    'code' in error &&
+    error.code === 'CommandInteractionOptionNotFound'
+  ) {
+    return new AppError('INVALID_INPUT', 'Заполните все поля команды и отправьте её снова.', {
+      cause: error,
+    });
+  }
+  return null;
 }
 
 /** Sends the error text without leaking internals. Answers ephemerally, whatever state the interaction is in. */

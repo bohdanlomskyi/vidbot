@@ -459,6 +459,25 @@ describe('failure replies', () => {
     expect(reply).not.toHaveBeenCalled();
   });
 
+  it('explains a missing required option in plain words, without logging an internal error', async () => {
+    const { services, logger } = fakeServices();
+    const missing = Object.assign(new Error('Required option "source" not found.'), {
+      code: 'CommandInteractionOptionNotFound',
+    });
+    handlers.play.mockRejectedValueOnce(missing);
+    const { interaction, reply } = fakeInteraction('chat', { commandName: 'play' });
+
+    await routeInteraction(interaction, services);
+
+    expect(reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: 'Заполните все поля команды и отправьте её снова.',
+        flags: MessageFlags.Ephemeral,
+      }),
+    );
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
   it('does not throw when the error reply itself cannot be delivered', async () => {
     const { services, logger } = fakeServices();
     handlers.play.mockRejectedValueOnce(new AppError('INTERNAL', 'Внутренняя ошибка.'));
