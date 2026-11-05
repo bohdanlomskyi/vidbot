@@ -1,0 +1,12 @@
+{
+  "streams": [
+    {
+      "id": "example-stream",
+      "title": "Пример потока (замените на свой)",
+      "artist": "Оператор бота",
+      "url": "https://stream.example.com/live.mp3",
+      "live": true,
+      "allowedHosts": ["stream.example.com"]
+    }
+  ]
+}

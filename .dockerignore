@@ -1,0 +1,18 @@
+# Keep the build context small and free of secrets and local state.
+.git
+.github
+.env
+.env.*
+node_modules
+dist
+coverage
+data
+music
+config
+docs
+tests
+*.log
+*.tmp
+.DS_Store
+.vscode
+.idea

@@ -1,0 +1,49 @@
+name: melody
+
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: melody-discord-music-bot:local
+    init: true
+    restart: unless-stopped
+    # Secrets are read from .env at run time. They are never written into the image.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Container paths. They override any value in .env, so the bot always uses the volumes below.
+      DATABASE_PATH: /app/data/melody.sqlite
+      HEALTH_FILE: /app/data/health.json
+      MUSIC_DIR: /app/music
+      STREAM_CATALOG_FILE: /app/config/streams.json
+    volumes:
+      # Music is read-only inside the container. Add files on the host.
+      - ./music:/app/music:ro
+      # The stream catalog is operator-owned and read-only.
+      - ./config:/app/config:ro
+      # Database, health file and the yt-dlp cache live in a named volume.
+      - melody-data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # The bot needs no inbound ports. It only opens outbound connections to Discord.
+    healthcheck:
+      test: ['CMD', 'node', 'dist/scripts/healthcheck.js']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+
+volumes:
+  melody-data:
