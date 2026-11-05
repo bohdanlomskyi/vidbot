@@ -1,0 +1,33 @@
+# Dependencies and build output
+node_modules/
+dist/
+coverage/
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+
+# Runtime data (SQLite, health file, yt-dlp cache)
+data/*
+!data/.gitkeep
+
+# Music library: operators add their own files; never commit copyrighted audio
+music/*
+!music/.gitkeep
+!music/README.md
+
+# Operator-specific stream catalog (may contain private URLs)
+config/streams.json
+
+# Logs and database artifacts
+*.log
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

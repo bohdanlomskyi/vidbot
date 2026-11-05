@@ -1,0 +1,61 @@
+{
+  "name": "melody-discord-music-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Melody: музыкальный Discord-бот с очередью, панелью управления и разрешёнными источниками аудио.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=24.17.0"
+  },
+  "scripts": {
+    "dev": "tsx watch --clear-screen=false src/index.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:live": "vitest run -c vitest.live.config.ts",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run test && npm run build",
+    "commands:register": "tsx src/scripts/register-commands.ts",
+    "library:scan": "tsx src/scripts/scan-library.ts",
+    "library:tone": "tsx src/scripts/create-test-tone.ts",
+    "doctor": "tsx src/scripts/doctor.ts",
+    "healthcheck": "node dist/scripts/healthcheck.js"
+  },
+  "dependencies": {
+    "@discordjs/opus": "^0.11.0",
+    "@discordjs/voice": "^0.19.2",
+    "better-sqlite3": "^13.0.3",
+    "discord.js": "^14.28.1",
+    "ipaddr.js": "^2.5.0",
+    "pino": "^10.4.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^24.19.2",
+    "eslint": "^10.14.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.14.0",
+    "prettier": "^3.9.10",
+    "tsx": "^4.23.15",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.72.1",
+    "vitest": "^5.1.0",
+    "yaml": "^2.9.1"
+  },
+  "overrides": {
+    "tar": "^7.5.22",
+    "minimatch": "^11.0.4"
+  },
+  "allowScripts": {
+    "@discordjs/opus@0.11.0": true,
+    "better-sqlite3@13.0.3": true,
+    "esbuild@0.28.2": true
+  }
+}
