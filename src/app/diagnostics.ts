@@ -14,6 +14,9 @@ export interface DiagnosticResult {
   readonly detail: string;
 }
 
+/** The Windows yt-dlp.exe unpacks itself on its first run, which can take well over 10 s. */
+const YTDLP_TIMEOUT_MS = 60_000;
+
 const MIN_NODE_VERSION: readonly [number, number, number] = [24, 17, 0];
 
 /** Checks that need a valid configuration. They are skipped with a note when it is broken. */
@@ -62,7 +65,7 @@ async function checkConfigured(config: AppConfig): Promise<DiagnosticResult[]> {
     await checkDataDirectory(config.paths.dataDir),
     checkDatabaseFile(config.paths.databaseFile),
     config.youtube.enabled
-      ? await checkTool('yt-dlp', config.youtube.ytdlpPath, ['--version'])
+      ? await checkTool('yt-dlp', config.youtube.ytdlpPath, ['--version'], YTDLP_TIMEOUT_MS)
       : skip('yt-dlp', 'YouTube отключён оператором'),
     config.streams.enabled
       ? await checkStreamCatalog(config.paths.streamCatalogFile)
@@ -122,8 +125,9 @@ async function checkTool(
   name: string,
   binary: string,
   args: readonly string[],
+  timeoutMs?: number,
 ): Promise<DiagnosticResult> {
-  const version = await readToolVersion(binary, args);
+  const version = await readToolVersion(binary, args, timeoutMs);
   return version === null
     ? { name, status: 'fail', detail: `не запускается: ${binary}` }
     : { name, status: 'ok', detail: version };

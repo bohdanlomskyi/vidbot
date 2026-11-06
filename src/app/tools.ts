@@ -9,13 +9,17 @@ const MAX_LINE_LENGTH = 200;
  * "ffmpeg version 6.1.1". Returns null when the tool is missing, exits with an error, or times
  * out. No shell is involved, so the binary path and the arguments are never interpreted.
  */
-export function readToolVersion(binary: string, args: readonly string[]): Promise<string | null> {
+export function readToolVersion(
+  binary: string,
+  args: readonly string[],
+  timeoutMs: number = VERSION_TIMEOUT_MS,
+): Promise<string | null> {
   return new Promise((resolve) => {
     execFile(
       binary,
       args,
       {
-        timeout: VERSION_TIMEOUT_MS,
+        timeout: timeoutMs,
         maxBuffer: MAX_OUTPUT_BYTES,
         windowsHide: true,
         encoding: 'utf8',

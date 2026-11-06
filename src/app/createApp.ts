@@ -26,6 +26,7 @@ import { countListeners } from '../discord/voice/listeners.js';
 import { createClient, wireClient } from '../discord/bot.js';
 import { MusicEngine } from '../music/engine/musicEngine.js';
 import type { SourceKind } from '../music/models/track.js';
+import { guildSettingsDefaults } from './guildDefaults.js';
 import { SourceRouter } from '../music/sourceRouter.js';
 import { SlidingWindowRateLimiter } from '../utils/rateLimiter.js';
 import { handleEngineEvent, toPlaybackSettings } from './engineEvents.js';
@@ -47,18 +48,6 @@ export interface App {
   stop(): Promise<void>;
 }
 
-/** Sources a guild may use until an administrator changes them. Optional providers only when enabled. */
-function defaultSources(config: AppConfig): SourceKind[] {
-  const kinds: SourceKind[] = ['local'];
-  if (config.streams.enabled) {
-    kinds.push('stream');
-  }
-  if (config.youtube.enabled) {
-    kinds.push('youtube');
-  }
-  return kinds;
-}
-
 /**
  * Composition root. It builds every service once, wires them together, and returns a
  * handle that starts and stops the bot. Nothing here connects to Discord until start().
@@ -71,14 +60,7 @@ export async function createApp(config: AppConfig, logger: Logger): Promise<App>
     logger.error({ detail: databaseCheck.detail }, 'The database failed its integrity check');
   }
 
-  const settings = new GuildSettingsRepository(db, {
-    queueLimit: config.playback.maxQueueSize,
-    maxTrackSec: config.playback.maxTrackSec,
-    idleTimeoutSec: config.playback.idleTimeoutSec,
-    emptyTimeoutSec: config.playback.emptyChannelTimeoutSec,
-    defaultVolume: config.playback.defaultVolume,
-    allowedSources: defaultSources(config),
-  });
+  const settings = new GuildSettingsRepository(db, guildSettingsDefaults(config));
   const history = new HistoryRepository(db, HISTORY_RETENTION_PER_GUILD);
   const catalog = new LibraryCatalog({
     musicDir: config.paths.musicDir,

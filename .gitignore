@@ -31,3 +31,6 @@ config/streams.json
 .idea/
 .DS_Store
 Thumbs.db
+
+# Portable tools downloaded by the installer (Node.js, FFmpeg, yt-dlp)
+.tools/

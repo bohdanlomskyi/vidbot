@@ -24,6 +24,7 @@
     "library:scan": "tsx src/scripts/scan-library.ts",
     "library:tone": "tsx src/scripts/create-test-tone.ts",
     "doctor": "tsx src/scripts/doctor.ts",
+    "setup": "tsx src/scripts/setup.ts",
     "healthcheck": "node dist/scripts/healthcheck.js"
   },
   "dependencies": {

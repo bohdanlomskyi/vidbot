@@ -1,0 +1,4 @@
+# Windows launchers and scripts keep CRLF line endings; shell scripts keep LF.
+*.cmd -text
+*.ps1 -text
+*.sh text eol=lf
