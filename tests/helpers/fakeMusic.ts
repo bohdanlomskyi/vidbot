@@ -24,7 +24,14 @@ export class FakeConnection implements VoiceConnectionPort {
   destroyed = false;
   private readonly lossHandlers: ((reason: VoiceLossReason) => void)[] = [];
 
-  constructor(readonly channelId: string) {}
+  constructor(
+    readonly guildId: string,
+    public channelId: string,
+  ) {}
+
+  get lossHandlerCount(): number {
+    return this.lossHandlers.length;
+  }
 
   subscribe(player: AudioPlayerPort): void {
     this.subscribedTo = player;
@@ -46,17 +53,28 @@ export class FakeConnection implements VoiceConnectionPort {
   }
 }
 
-/** Voice port whose next `failures` connection attempts are rejected. */
+/**
+ * Voice port whose next `failures` connection attempts are rejected. Like @discordjs/voice,
+ * it keeps one connection per guild: connecting a guild that still has a live connection
+ * moves that connection to the new channel and returns the same object.
+ */
 export class FakeVoice implements VoicePort {
   readonly connections: FakeConnection[] = [];
   failures = 0;
 
-  connect(_guildId: string, channelId: string): Promise<VoiceConnectionPort> {
+  connect(guildId: string, channelId: string): Promise<VoiceConnectionPort> {
     if (this.failures > 0) {
       this.failures -= 1;
       return Promise.reject(new Error('Missing permissions'));
     }
-    const connection = new FakeConnection(channelId);
+    const live = this.connections.find(
+      (connection) => connection.guildId === guildId && !connection.destroyed,
+    );
+    if (live !== undefined) {
+      live.channelId = channelId;
+      return Promise.resolve(live);
+    }
+    const connection = new FakeConnection(guildId, channelId);
     this.connections.push(connection);
     return Promise.resolve(connection);
   }
@@ -147,6 +165,19 @@ export class FakeProvider implements AudioProvider {
   readonly enabled = true;
   readonly opened: FakePlayable[] = [];
   readonly failTitles = new Set<string>();
+  /** Titles whose source opens only when the test resolves the gate. */
+  readonly gates = new Map<string, PromiseWithResolvers<undefined>>();
+  /** The abort signal of every open attempt, by title. */
+  readonly signals = new Map<string, AbortSignal>();
+
+  /** Makes the next open of `title` wait until the returned function is called. */
+  hold(title: string): () => void {
+    const gate = Promise.withResolvers<undefined>();
+    this.gates.set(title, gate);
+    return () => {
+      gate.resolve(undefined);
+    };
+  }
 
   canHandle(): boolean {
     return true;
@@ -160,16 +191,22 @@ export class FakeProvider implements AudioProvider {
     return Promise.resolve();
   }
 
-  getPlayableStream(track: Track, signal: AbortSignal): Promise<PlayableSource> {
-    if (signal.aborted) {
-      return Promise.reject(new AppError('CANCELLED', 'Воспроизведение отменено.'));
+  async getPlayableStream(track: Track, signal: AbortSignal): Promise<PlayableSource> {
+    this.signals.set(track.title, signal);
+    const gate = this.gates.get(track.title);
+    if (gate !== undefined) {
+      this.gates.delete(track.title);
+      // Like a slow network source that ignores cancellation: it opens when the gate opens.
+      await gate.promise;
+    } else if (signal.aborted) {
+      throw new AppError('CANCELLED', 'Воспроизведение отменено.');
     }
     if (this.failTitles.has(track.title)) {
-      return Promise.reject(new AppError('SOURCE_UNAVAILABLE', 'Файл недоступен.'));
+      throw new AppError('SOURCE_UNAVAILABLE', 'Файл недоступен.');
     }
     const playable = new FakePlayable(track.title);
     this.opened.push(playable);
-    return Promise.resolve(playable);
+    return playable;
   }
 
   dispose(): Promise<void> {
@@ -208,6 +245,8 @@ export function draft(title: string, durationSec: number | null = 200): TrackDra
 
 export interface Harness {
   readonly engine: MusicEngine;
+  /** Errors the engine logged at error level. */
+  readonly errors: unknown[];
   readonly voice: FakeVoice;
   readonly players: FakePlayer[];
   readonly provider: FakeProvider;
@@ -216,8 +255,17 @@ export interface Harness {
   setListeners(count: number): void;
 }
 
-export function createHarness(overrides: Partial<GuildPlaybackSettings> = {}): Harness {
+export interface HarnessOptions {
+  readonly bufferTimeoutMs?: number;
+  readonly onChange?: (snapshot: GuildSnapshot) => void;
+}
+
+export function createHarness(
+  overrides: Partial<GuildPlaybackSettings> = {},
+  options: HarnessOptions = {},
+): Harness {
   const voice = new FakeVoice();
+  const errors: unknown[] = [];
   const players: FakePlayer[] = [];
   const provider = new FakeProvider();
   const events: EngineEvent[] = [];
@@ -234,17 +282,24 @@ export function createHarness(overrides: Partial<GuildPlaybackSettings> = {}): H
     providers: (kind) => (kind === 'local' ? provider : undefined),
     listeners: () => listeners,
     settings: () => settings,
-    onChange: () => undefined,
+    onChange: options.onChange ?? (() => undefined),
     onEvent: (event) => {
       events.push(event);
     },
-    logger: silentLogger,
+    logger: {
+      ...silentLogger,
+      error: (details: unknown) => {
+        errors.push(details);
+      },
+    },
     random: () => 0,
     now: () => Date.now(),
+    bufferTimeoutMs: options.bufferTimeoutMs,
   });
 
   return {
     engine,
+    errors,
     voice,
     players,
     provider,

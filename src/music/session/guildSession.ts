@@ -5,12 +5,21 @@ import { TrackQueue } from '../queue/trackQueue.js';
 import { canTransition, type PlaybackState } from './playbackState.js';
 import { SessionTimers } from './sessionTimers.js';
 
+/** How an attempt to start a track ended. `deferred` means it waits for a voice reconnect. */
+export type StartResult =
+  | { readonly outcome: 'started' }
+  | { readonly outcome: 'failed'; readonly message: string }
+  | { readonly outcome: 'cancelled' }
+  | { readonly outcome: 'deferred' };
+
 /** The track that is loading or playing, with the handles needed to stop it. */
 export interface CurrentPlayback {
   readonly track: Track;
   readonly token: number;
   /** Aborts buffering, and closes the source through the provider's abort handling. */
   readonly controller: AbortController;
+  /** Settles once, when the source has been handed to the player or the attempt has ended. */
+  readonly start: PromiseWithResolvers<StartResult>;
   playable: PlayableSource | null;
   finished: boolean;
   /** Milliseconds of audible playback accumulated before the latest pause. */

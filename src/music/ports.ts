@@ -11,6 +11,7 @@ export type LoopMode = 'off' | 'track' | 'queue';
 
 /** A live voice connection. The Discord implementation wraps @discordjs/voice. */
 export interface VoiceConnectionPort {
+  /** The channel the connection is in now. It changes when the connection is moved. */
   readonly channelId: string;
   subscribe(player: AudioPlayerPort): void;
   onLost(handler: (reason: VoiceLossReason) => void): void;
@@ -18,7 +19,11 @@ export interface VoiceConnectionPort {
 }
 
 export interface VoicePort {
-  /** Resolves once the connection is ready. Rejects when it cannot be made. */
+  /**
+   * Resolves once the connection is ready. Rejects when it cannot be made. Discord allows
+   * one voice connection per guild: when the guild already has a live connection, it is
+   * moved to `channelId` and the same object is returned.
+   */
   connect(guildId: string, channelId: string): Promise<VoiceConnectionPort>;
 }
 

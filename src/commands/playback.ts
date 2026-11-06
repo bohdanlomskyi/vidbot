@@ -19,6 +19,7 @@ import type { SourceKind, TrackDraft } from '../music/models/track.js';
 import type { AccessAction, AccessDecision } from '../security/accessPolicy.js';
 import type { LoopMode } from '../music/ports.js';
 import { AppError } from '../utils/errors.js';
+import { describeEnqueue } from './enqueueReply.js';
 import { formatDuration, truncate, escapeMarkdown } from '../utils/format.js';
 import {
   assertBotCanUse,
@@ -162,13 +163,10 @@ async function startPlayback(ctx: ActionContext, input: string): Promise<string>
     requesterId: ctx.member.id,
     tracks: drafts,
   });
-  if (result.startedNow) {
-    return `Сейчас играет: «${first.title}».`;
-  }
-  const position = result.positions[0] ?? 0;
-  return drafts.length === 1
-    ? `Добавлено в очередь: «${first.title}», позиция ${String(position)}.`
-    : `Добавлено треков: ${String(drafts.length)}, начиная с позиции ${String(position)}.`;
+  return describeEnqueue(
+    drafts.map((item) => item.title),
+    result,
+  );
 }
 
 async function doSkip(ctx: ActionContext): Promise<string> {
@@ -505,10 +503,12 @@ export async function handlePlaylistButton(
   });
   services.panel.requestRefresh(guildId);
   await interaction.editReply({
-    content: result.startedNow
-      ? `Добавлено треков: ${String(pending.tracks.length)}. Сейчас играет первый.`
-      : `Добавлено треков: ${String(pending.tracks.length)}, начиная с позиции ${String(result.positions[0] ?? 0)}.`,
+    content: describeEnqueue(
+      pending.tracks.map((item) => item.title),
+      result,
+    ),
     components: [],
+    allowedMentions: { parse: [] },
   });
 }
 

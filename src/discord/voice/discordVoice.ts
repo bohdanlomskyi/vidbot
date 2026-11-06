@@ -30,16 +30,29 @@ const RECOVER_TIMEOUT_MS = 5_000;
 
 /**
  * Joins voice channels through @discordjs/voice. The library supplies DAVE end-to-end
- * encryption and Opus encoding. This class only manages connection lifetime and maps
+ * encryption and Opus packet transport. This class only manages connection lifetime and maps
  * library events to the engine's ports.
+ *
+ * Discord allows one voice connection per guild, and the library returns the existing one
+ * from joinVoiceChannel. So a guild with a live connection is moved with rejoin(), and the
+ * same port object is returned: the engine must never destroy it as an "old" connection.
  */
 export class DiscordVoicePort implements VoicePort {
+  private readonly live = new Map<string, DiscordVoiceConnection>();
+
   constructor(
     private readonly client: Client,
     private readonly log: Pick<Logger, 'warn' | 'info'>,
   ) {}
 
   async connect(guildId: string, channelId: string): Promise<VoiceConnectionPort> {
+    const existing = this.live.get(guildId);
+    if (existing !== undefined && !existing.destroyed) {
+      await existing.moveTo(channelId);
+      this.log.info({ guildId }, 'Moved to another voice channel');
+      return existing;
+    }
+
     const guild =
       this.client.guilds.cache.get(guildId) ?? (await this.client.guilds.fetch(guildId));
     const connection = joinVoiceChannel({
@@ -57,23 +70,52 @@ export class DiscordVoicePort implements VoicePort {
       throw error;
     }
     this.log.info({ guildId }, 'Joined voice channel');
-    return new DiscordVoiceConnection(connection, channelId, this.log);
+    const wrapper = new DiscordVoiceConnection(connection, channelId, this.log, () => {
+      if (this.live.get(guildId) === wrapper) {
+        this.live.delete(guildId);
+      }
+    });
+    this.live.set(guildId, wrapper);
+    return wrapper;
   }
 }
 
 class DiscordVoiceConnection implements VoiceConnectionPort {
   private readonly lossHandlers: ((reason: VoiceLossReason) => void)[] = [];
+  private lastChannelId: string;
 
   constructor(
     private readonly connection: VoiceConnection,
-    readonly channelId: string,
+    channelId: string,
     private readonly log: Pick<Logger, 'warn' | 'info'>,
+    onDestroyed: () => void,
   ) {
+    this.lastChannelId = channelId;
     connection.on('stateChange', (_oldState, newState) => {
       if (newState.status === VoiceConnectionStatus.Disconnected) {
         void this.handleDisconnect(newState);
+      } else if (newState.status === VoiceConnectionStatus.Destroyed) {
+        onDestroyed();
       }
     });
+  }
+
+  /** The library keeps the channel up to date, including after an administrator moves the bot. */
+  get channelId(): string {
+    this.lastChannelId = this.connection.joinConfig.channelId ?? this.lastChannelId;
+    return this.lastChannelId;
+  }
+
+  get destroyed(): boolean {
+    return this.connection.state.status === VoiceConnectionStatus.Destroyed;
+  }
+
+  /** Moves this connection to another channel of the same guild and waits until it is ready. */
+  async moveTo(channelId: string): Promise<void> {
+    if (this.connection.joinConfig.channelId !== channelId) {
+      this.connection.rejoin({ channelId, selfDeaf: true, selfMute: false });
+    }
+    await entersState(this.connection, VoiceConnectionStatus.Ready, CONNECT_TIMEOUT_MS);
   }
 
   subscribe(player: AudioPlayerPort): void {
@@ -88,7 +130,9 @@ class DiscordVoiceConnection implements VoiceConnectionPort {
   }
 
   destroy(): void {
-    this.connection.destroy();
+    if (!this.destroyed) {
+      this.connection.destroy();
+    }
   }
 
   private async handleDisconnect(state: {
@@ -109,7 +153,7 @@ class DiscordVoiceConnection implements VoiceConnectionPort {
     } catch {
       // Not recovering. Fall through and report the loss.
     }
-    if (this.connection.state.status === VoiceConnectionStatus.Destroyed) {
+    if (this.destroyed) {
       return;
     }
     this.log.warn({ removed }, 'Voice connection lost');

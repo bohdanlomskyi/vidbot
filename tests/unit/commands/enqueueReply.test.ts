@@ -1,0 +1,45 @@
+import { describe, expect, it } from 'vitest';
+import { describeEnqueue } from '../../../src/commands/enqueueReply.js';
+
+describe('describeEnqueue', () => {
+  it('says the track is playing when it started straight away', () => {
+    expect(describeEnqueue(['Alpha'], { positions: [1], startedNow: true, failure: null })).toBe(
+      'Сейчас играет: «Alpha».',
+    );
+  });
+
+  it('gives the queue position of a track added behind others', () => {
+    expect(describeEnqueue(['Alpha'], { positions: [3], startedNow: false, failure: null })).toBe(
+      'Добавлено в очередь: «Alpha», позиция 3.',
+    );
+  });
+
+  it('reports a failed start instead of claiming the track was queued', () => {
+    expect(
+      describeEnqueue(['Alpha'], {
+        positions: [1],
+        startedNow: false,
+        failure: 'YouTube не ответил вовремя.',
+      }),
+    ).toBe('Не удалось воспроизвести «Alpha»: YouTube не ответил вовремя.');
+  });
+
+  it('counts a batch and names the first track that started', () => {
+    expect(
+      describeEnqueue(['Alpha', 'Beta'], { positions: [1, 2], startedNow: true, failure: null }),
+    ).toBe('Добавлено треков: 2. Сейчас играет «Alpha».');
+    expect(
+      describeEnqueue(['Alpha', 'Beta'], { positions: [4, 5], startedNow: false, failure: null }),
+    ).toBe('Добавлено треков: 2, начиная с позиции 4.');
+  });
+
+  it('keeps the rest of a batch when its first track fails', () => {
+    expect(
+      describeEnqueue(['Alpha', 'Beta', 'Gamma'], {
+        positions: [1, 2, 3],
+        startedNow: false,
+        failure: 'файл недоступен.',
+      }),
+    ).toBe('Добавлено треков: 3. «Alpha» не удалось воспроизвести: файл недоступен.');
+  });
+});

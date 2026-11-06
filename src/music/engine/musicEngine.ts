@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { Logger } from 'pino';
 import type { PlayableSource } from '../../audio/providers/types.js';
-import { withTimeout } from '../../utils/async.js';
-import { AppError, isAppError, toUserMessage } from '../../utils/errors.js';
+import type { AudioProvider } from '../../audio/providers/types.js';
+import { AppError, toUserMessage } from '../../utils/errors.js';
 import { KeyedMutex } from '../../utils/keyedMutex.js';
 import type { Track, TrackDraft } from '../models/track.js';
 import type {
@@ -17,7 +17,7 @@ import type {
   VoiceLossReason,
   VoicePort,
 } from '../ports.js';
-import { type CurrentPlayback, GuildSession } from '../session/guildSession.js';
+import { type CurrentPlayback, GuildSession, type StartResult } from '../session/guildSession.js';
 import type { PlaybackState } from '../session/playbackState.js';
 import type { GuildSnapshot } from './snapshot.js';
 
@@ -30,7 +30,10 @@ export interface EnqueueRequest {
 
 export interface EnqueueResult {
   readonly positions: readonly number[];
+  /** True when the first added track started playing straight away. */
   readonly startedNow: boolean;
+  /** Why the first added track could not start, when the bot was idle and it failed. */
+  readonly failure: string | null;
 }
 
 export interface SkipVoteResult {
@@ -52,15 +55,21 @@ export interface MusicEngineOptions {
   readonly logger?: EngineLogger;
   readonly random?: () => number;
   readonly now?: () => number;
+  /** Longest wait for a source to open before the track is given up. */
+  readonly bufferTimeoutMs?: number;
 }
 
-/** Longest wait for a source to start producing audio before the track is given up. */
 const BUFFER_TIMEOUT_MS = 20_000;
+const BUFFER_TIMEOUT_MESSAGE = 'Не удалось начать воспроизведение вовремя.';
 /** Pauses between voice reconnection attempts. The list length is the attempt limit. */
 const RECONNECT_DELAYS_MS: readonly number[] = [1_000, 3_000, 8_000];
 const NOTHING_PLAYING = 'Сейчас ничего не играет.';
 
-type StartOutcome = 'started' | 'failed' | 'cancelled' | 'deferred';
+/** What opening a source produced. Loading runs outside the guild lock. */
+type LoadOutcome =
+  | { readonly kind: 'opened'; readonly playable: PlayableSource }
+  | { readonly kind: 'failed'; readonly error: unknown }
+  | { readonly kind: 'timeout' };
 
 const NOOP_LOGGER: EngineLogger = {
   info: () => undefined,
@@ -72,8 +81,10 @@ const NOOP_LOGGER: EngineLogger = {
 /**
  * Coordinates playback for every guild. Each public operation runs under a per-guild lock,
  * so commands and playback events for one guild are applied one at a time, in arrival order.
- * Guilds never share state. Long waits (resolving a source) happen outside the lock.
- * Buffering can be interrupted by skip, stop and restart.
+ * Guilds never share state. Opening a source, which can take seconds for a network source,
+ * runs outside the lock: commands keep working while the next track loads, and the result is
+ * applied under the lock only if that track is still current. Events from the player and the
+ * voice connection are handled in the background, and a failure there is logged, never thrown.
  */
 export class MusicEngine {
   private readonly sessions = new Map<string, GuildSession>();
@@ -81,17 +92,35 @@ export class MusicEngine {
   private readonly log: EngineLogger;
   private readonly now: () => number;
   private readonly random: () => number;
+  private readonly bufferTimeoutMs: number;
+  private stopped = false;
 
   constructor(private readonly options: MusicEngineOptions) {
     this.log = options.logger ?? NOOP_LOGGER;
     this.now = options.now ?? Date.now;
     this.random = options.random ?? Math.random;
+    this.bufferTimeoutMs = options.bufferTimeoutMs ?? BUFFER_TIMEOUT_MS;
   }
 
   // ---------- commands ----------
 
-  enqueue(request: EnqueueRequest): Promise<EnqueueResult> {
-    return this.locked(request.guildId, () => this.doEnqueue(request));
+  /**
+   * Adds tracks. When the bot was idle, it waits (without holding the guild) until the first
+   * track has started or failed, so the caller can report what really happened.
+   */
+  async enqueue(request: EnqueueRequest): Promise<EnqueueResult> {
+    const { positions, loading } = await this.locked(request.guildId, () =>
+      this.doEnqueue(request),
+    );
+    if (loading === null) {
+      return { positions, startedNow: false, failure: null };
+    }
+    const result = await loading.start.promise;
+    return {
+      positions,
+      startedNow: result.outcome === 'started',
+      failure: result.outcome === 'failed' ? result.message : null,
+    };
   }
 
   pause(guildId: string): Promise<void> {
@@ -126,14 +155,13 @@ export class MusicEngine {
 
   /** Skips the current track. Returns null when a track that was still loading was cancelled. */
   skip(guildId: string): Promise<Track | null> {
-    this.interruptBuffering(guildId);
     return this.locked(guildId, async () => {
       const session = this.requireSession(guildId);
       const skipped = await this.discardCurrent(session, true);
       if (skipped === null && session.queue.size === 0 && session.pendingReplay === null) {
         throw new AppError('NOT_FOUND', NOTHING_PLAYING);
       }
-      await this.playNext(session);
+      this.playNext(session);
       this.afterChange(session);
       return skipped;
     });
@@ -154,14 +182,13 @@ export class MusicEngine {
         return { skipped: false, votes, required };
       }
       await this.discardCurrent(session, true);
-      await this.playNext(session);
+      this.playNext(session);
       this.afterChange(session);
       return { skipped: true, votes, required };
     });
   }
 
   stop(guildId: string): Promise<void> {
-    this.interruptBuffering(guildId);
     return this.locked(guildId, async () => {
       const session = this.sessions.get(guildId);
       if (session !== undefined) {
@@ -175,7 +202,6 @@ export class MusicEngine {
   }
 
   restart(guildId: string): Promise<void> {
-    this.interruptBuffering(guildId);
     return this.locked(guildId, async () => {
       const session = this.requireSession(guildId);
       const track = await this.discardCurrent(session, false);
@@ -183,7 +209,7 @@ export class MusicEngine {
         throw new AppError('NOT_FOUND', NOTHING_PLAYING);
       }
       session.pendingReplay = track;
-      await this.playNext(session);
+      this.playNext(session);
       this.afterChange(session);
     });
   }
@@ -317,6 +343,7 @@ export class MusicEngine {
   }
 
   async shutdown(): Promise<void> {
+    this.stopped = true;
     for (const session of [...this.sessions.values()]) {
       await this.locked(session.guildId, () => this.teardown(session, 'shutdown'));
       session.player.destroy();
@@ -328,6 +355,19 @@ export class MusicEngine {
 
   private locked<T>(guildId: string, task: () => Promise<T>): Promise<T> {
     return this.lock.run(guildId, task);
+  }
+
+  /**
+   * Runs an event-driven task under the guild lock. Nobody awaits these tasks, so a failure
+   * is logged here. An unobserved rejection would otherwise stop the whole process.
+   */
+  private background(guildId: string, task: () => Promise<void>): void {
+    if (this.stopped) {
+      return;
+    }
+    this.locked(guildId, task).catch((error: unknown) => {
+      this.log.error({ guildId, err: error }, 'A playback event could not be handled');
+    });
   }
 
   private sessionFor(guildId: string): GuildSession {
@@ -351,17 +391,11 @@ export class MusicEngine {
     return session;
   }
 
-  /** Cancels a track that is still loading, so a skip or stop does not wait for the lock. */
-  private interruptBuffering(guildId: string): void {
-    const playback = this.sessions.get(guildId)?.current;
-    if (playback !== null && playback !== undefined && playback.playable === null) {
-      playback.controller.abort();
-    }
-  }
-
   // ---------- internals: queueing and playback ----------
 
-  private async doEnqueue(request: EnqueueRequest): Promise<EnqueueResult> {
+  private async doEnqueue(
+    request: EnqueueRequest,
+  ): Promise<{ positions: readonly number[]; loading: CurrentPlayback | null }> {
     const settings = this.options.settings(request.guildId);
     for (const draft of request.tracks) {
       if (draft.durationSec !== null && draft.durationSec > settings.maxTrackSec) {
@@ -387,43 +421,43 @@ export class MusicEngine {
     const tracks = request.tracks.map((draft) => toTrack(draft, request.requesterId, now));
     const positions = session.queue.enqueue(tracks);
 
-    const wasIdle = session.current === null;
-    if (wasIdle) {
-      await this.playNext(session);
-    }
+    const loading = session.current === null ? this.playNext(session) : null;
     this.afterChange(session);
-    return { positions, startedNow: wasIdle && session.current !== null };
+    return { positions, loading };
   }
 
-  /** Starts the next track, skipping tracks that cannot be opened. Stops at the first outcome that needs no further action. */
-  private async playNext(session: GuildSession): Promise<void> {
+  /**
+   * Starts loading the next track and returns it, or returns null when nothing is left.
+   * Tracks whose provider is unavailable are reported and passed over.
+   */
+  private playNext(session: GuildSession): CurrentPlayback | null {
     for (;;) {
       const replay = session.pendingReplay;
       session.pendingReplay = null;
       const track = replay ?? session.queue.shift();
       if (track === undefined) {
         this.setState(session, 'idle');
-        return;
+        return null;
       }
-      const outcome = await this.startPlayback(session, track);
-      if (outcome !== 'failed') {
-        return;
+      const provider = this.options.providers(track.source);
+      if (provider === undefined || !provider.enabled) {
+        this.reportFailure(session, track, 'этот источник сейчас недоступен.');
+        continue;
       }
+      return this.beginLoading(session, track, provider);
     }
   }
 
-  private async startPlayback(session: GuildSession, track: Track): Promise<StartOutcome> {
-    const provider = this.options.providers(track.source);
-    if (provider === undefined || !provider.enabled) {
-      this.reportFailure(session, track, 'этот источник сейчас недоступен.');
-      return 'failed';
-    }
-
-    const token = session.nextToken();
+  private beginLoading(
+    session: GuildSession,
+    track: Track,
+    provider: AudioProvider,
+  ): CurrentPlayback {
     const playback: CurrentPlayback = {
       track,
-      token,
+      token: session.nextToken(),
       controller: new AbortController(),
+      start: Promise.withResolvers<StartResult>(),
       playable: null,
       finished: false,
       playedMs: 0,
@@ -432,64 +466,123 @@ export class MusicEngine {
     session.current = playback;
     session.votes.clear();
     this.setState(session, 'buffering');
+    void this.load(session, playback, provider);
+    return playback;
+  }
 
-    let playable: PlayableSource;
-    try {
-      await provider.validate(track);
-      playable = await withTimeout(
-        provider.getPlayableStream(track, playback.controller.signal),
-        BUFFER_TIMEOUT_MS,
-        'Не удалось начать воспроизведение вовремя.',
+  /**
+   * Opens the source outside the guild lock, then applies the result under the lock. On
+   * timeout the provider is cancelled, and a source that still opens later is closed, so a
+   * slow source cannot leave a decoder or download process behind.
+   */
+  private async load(
+    session: GuildSession,
+    playback: CurrentPlayback,
+    provider: AudioProvider,
+  ): Promise<void> {
+    const opening = (async () => {
+      await provider.validate(playback.track);
+      return provider.getPlayableStream(playback.track, playback.controller.signal);
+    })();
+
+    let timer: NodeJS.Timeout | undefined;
+    const deadline = new Promise<LoadOutcome>((resolve) => {
+      timer = setTimeout(() => {
+        resolve({ kind: 'timeout' });
+      }, this.bufferTimeoutMs);
+    });
+    const outcome = await Promise.race<LoadOutcome>([
+      opening.then(
+        (playable): LoadOutcome => ({ kind: 'opened', playable }),
+        (error: unknown): LoadOutcome => ({ kind: 'failed', error }),
+      ),
+      deadline,
+    ]);
+    clearTimeout(timer);
+
+    if (outcome.kind === 'timeout') {
+      playback.controller.abort();
+      opening.then(
+        (late) => late.close(),
+        () => undefined,
       );
-    } catch (error) {
-      if (session.current === playback) {
-        session.current = null;
+    }
+    if (this.stopped) {
+      if (outcome.kind === 'opened') {
+        await outcome.playable.close();
       }
-      if (isAppError(error) && error.code === 'CANCELLED') {
-        return 'cancelled';
+      playback.start.resolve({ outcome: 'cancelled' });
+      return;
+    }
+    this.background(session.guildId, () => this.attach(session, playback, outcome));
+  }
+
+  /** Hands an opened source to the player, unless the track was replaced while it loaded. */
+  private async attach(
+    session: GuildSession,
+    playback: CurrentPlayback,
+    outcome: LoadOutcome,
+  ): Promise<void> {
+    if (session.current !== playback || playback.finished) {
+      // A skip, stop or restart replaced this playback while it was loading.
+      if (outcome.kind === 'opened') {
+        await outcome.playable.close();
       }
-      this.reportFailure(session, track, toUserMessage(error, 'не удалось открыть трек.'));
-      return 'failed';
+      playback.start.resolve({ outcome: 'cancelled' });
+      return;
     }
 
-    if (session.current !== playback) {
-      // A skip, stop or restart replaced this playback while it was loading.
-      await playable.close();
-      return 'cancelled';
+    if (outcome.kind !== 'opened') {
+      session.current = null;
+      const message =
+        outcome.kind === 'timeout'
+          ? BUFFER_TIMEOUT_MESSAGE
+          : toUserMessage(outcome.error, 'не удалось открыть трек.');
+      this.reportFailure(session, playback.track, message);
+      playback.start.resolve({ outcome: 'failed', message });
+      this.playNext(session);
+      this.afterChange(session);
+      return;
     }
+
+    const playable = outcome.playable;
     if (session.connection === null) {
       // The voice connection was lost while loading. Keep the track for after the reconnect.
       await playable.close();
       session.current = null;
-      session.pendingReplay = track;
-      return 'deferred';
+      session.pendingReplay = playback.track;
+      playback.start.resolve({ outcome: 'deferred' });
+      this.afterChange(session);
+      return;
     }
 
+    const { token } = playback;
+    const guildId = session.guildId;
     playback.playable = playable;
     session.player.play(playable.stream, {
       onStart: () => {
-        void this.locked(session.guildId, () => {
+        this.background(guildId, () => {
           this.handleStart(session, token);
           return Promise.resolve();
         });
       },
       onEnd: () => {
-        void this.locked(session.guildId, () => this.finishTrack(session, token, 'completed'));
+        this.background(guildId, () => this.finishTrack(session, token, 'completed'));
       },
       onError: (error) => {
-        this.log.warn({ guildId: session.guildId, err: error }, 'Audio player reported an error');
-        void this.locked(session.guildId, () =>
+        this.log.warn({ guildId, err: error }, 'Audio player reported an error');
+        this.background(guildId, () =>
           this.finishTrack(session, token, 'failed', 'ошибка воспроизведения.'),
         );
       },
     });
-
     void playable.ended.then((end) => {
       if (end.status === 'failed') {
-        void this.locked(session.guildId, () => this.finishTrack(session, token, 'failed', end.message));
+        this.background(guildId, () => this.finishTrack(session, token, 'failed', end.message));
       }
     });
-    return 'started';
+    playback.start.resolve({ outcome: 'started' });
+    this.afterChange(session);
   }
 
   /** Ends the track in `token` exactly once. Stale or duplicate signals are ignored. */
@@ -519,7 +612,7 @@ export class MusicEngine {
       this.reportFailure(session, playback.track, message ?? 'ошибка воспроизведения.');
     }
 
-    await this.playNext(session);
+    this.playNext(session);
     this.afterChange(session);
   }
 
@@ -544,6 +637,7 @@ export class MusicEngine {
     playback.finished = true;
     this.accumulate(playback);
     playback.controller.abort();
+    playback.start.resolve({ outcome: 'cancelled' });
     session.player.stop();
     await playback.playable?.close();
     if (rotate && session.loop === 'queue') {
@@ -590,11 +684,16 @@ export class MusicEngine {
     const previous = session.connection;
     session.connection = established;
     session.voiceChannelId = channelId;
-    established.subscribe(session.player);
-    established.onLost((reason) => {
-      void this.locked(session.guildId, () => this.handleLoss(session, established, reason));
-    });
-    previous?.destroy();
+    // Discord allows one voice connection per guild, so a move returns the connection that is
+    // already live. Only a genuinely new connection gets a loss handler, and only a different
+    // previous connection is destroyed.
+    if (established !== previous) {
+      established.subscribe(session.player);
+      established.onLost((reason) => {
+        this.background(session.guildId, () => this.handleLoss(session, established, reason));
+      });
+      previous?.destroy();
+    }
     session.timers.cancel('reconnect');
     if (session.state === 'connecting') {
       session.transition('idle');
@@ -647,7 +746,7 @@ export class MusicEngine {
       return false;
     }
     session.timers.ensure('reconnect', delay, () => {
-      void this.locked(session.guildId, () => this.attemptReconnect(session));
+      this.background(session.guildId, () => this.attemptReconnect(session));
     });
     return true;
   }
@@ -674,7 +773,7 @@ export class MusicEngine {
     const playback = session.current;
     if (playback === null) {
       if (session.pendingReplay !== null || session.queue.size > 0) {
-        await this.playNext(session);
+        this.playNext(session);
       } else {
         this.setState(session, 'idle');
       }
@@ -732,7 +831,7 @@ export class MusicEngine {
 
     if (connected && listeners === 0) {
       session.timers.ensure('empty', settings.emptyTimeoutSec * 1000, () => {
-        void this.locked(session.guildId, () => this.onEmptyTimeout(session));
+        this.background(session.guildId, () => this.onEmptyTimeout(session));
       });
     } else {
       session.timers.cancel('empty');
@@ -741,7 +840,7 @@ export class MusicEngine {
     const idle = session.state === 'idle' && session.current === null && session.queue.size === 0;
     if (connected && idle) {
       session.timers.ensure('idle', settings.idleTimeoutSec * 1000, () => {
-        void this.locked(session.guildId, () => this.onIdleTimeout(session));
+        this.background(session.guildId, () => this.onIdleTimeout(session));
       });
     } else {
       session.timers.cancel('idle');

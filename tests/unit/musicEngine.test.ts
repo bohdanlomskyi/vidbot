@@ -62,7 +62,7 @@ describe('MusicEngine', () => {
       await harness.engine.enqueue(request('g1', 'c1', ['Alpha']));
       const result = await harness.engine.enqueue(request('g1', 'c1', ['Beta', 'Gamma']));
 
-      expect(result).toEqual({ positions: [1, 2], startedNow: false });
+      expect(result).toEqual({ positions: [1, 2], startedNow: false, failure: null });
       expect(harness.engine.snapshot('g1').queue.map((item) => item.title)).toEqual([
         'Beta',
         'Gamma',
@@ -424,8 +424,13 @@ describe('MusicEngine', () => {
 
       await harness.engine.move('g1', 'c2');
 
+      // Discord keeps one voice connection per guild, and moving reuses it. Destroying the
+      // "previous" connection would destroy the moved one and silently drop the bot.
       expect(harness.voice.active.map((connection) => connection.channelId)).toEqual(['c2']);
-      expect(harness.voice.connections[0]?.destroyed).toBe(true);
+      expect(harness.voice.connections).toHaveLength(1);
+      expect(harness.voice.active[0]?.subscribedTo).toBe(harness.players[0]);
+      expect(harness.voice.active[0]?.lossHandlerCount).toBe(1);
+      expect(harness.engine.snapshot('g1')).toMatchObject({ voiceChannelId: 'c2' });
       expect(harness.engine.snapshot('g1').queue.map((item) => item.title)).toEqual(['Beta']);
       expect(harness.engine.snapshot('g1').nowPlaying?.track.title).toBe('Alpha');
     });
@@ -466,6 +471,8 @@ describe('MusicEngine', () => {
       await harness.engine.handleBotVoiceChange('g1', 'c9');
 
       expect(harness.voice.active.map((connection) => connection.channelId)).toEqual(['c9']);
+      expect(harness.voice.active[0]?.subscribedTo).toBe(harness.players[0]);
+      expect(harness.engine.snapshot('g1')).toMatchObject({ voiceChannelId: 'c9' });
     });
 
     it('treats the bot being disconnected by an administrator as a stop', async () => {
@@ -498,6 +505,98 @@ describe('MusicEngine', () => {
 
       expect(harness.voice.active).toHaveLength(0);
       expect(harness.players.every((player) => player.destroyed)).toBe(true);
+    });
+  });
+
+  describe('loading a track outside the guild lock', () => {
+    it('answers other commands while the next track is still loading', async () => {
+      await harness.engine.enqueue(request('g1', 'c1', ['Alpha', 'Beta']));
+      harness.players[0]?.emitStart();
+      await flush();
+      const release = harness.provider.hold('Beta');
+
+      await harness.engine.skip('g1');
+      await harness.engine.setVolume('g1', 40);
+
+      expect(harness.players[0]?.gain).toBe(0.4);
+      expect(harness.engine.snapshot('g1')).toMatchObject({
+        state: 'buffering',
+        nowPlaying: { track: { title: 'Beta' } },
+      });
+
+      release();
+      await flush();
+      await flush();
+      expect(harness.players[0]?.played).toHaveLength(2);
+    });
+
+    it('closes a source that finishes opening after its track was skipped', async () => {
+      await harness.engine.enqueue(request('g1', 'c1', ['Alpha', 'Slow', 'Gamma']));
+      harness.players[0]?.emitStart();
+      await flush();
+      const release = harness.provider.hold('Slow');
+      await harness.engine.skip('g1');
+
+      await harness.engine.skip('g1');
+      release();
+      await flush();
+      await flush();
+
+      expect(harness.provider.signals.get('Slow')?.aborted).toBe(true);
+      expect(harness.provider.opened.find((item) => item.title === 'Slow')?.closed).toBe(true);
+      expect(harness.engine.snapshot('g1').nowPlaying?.track.title).toBe('Gamma');
+    });
+
+    it('gives up on a source that does not open in time, cancels it, and closes it if it opens later', async () => {
+      harness = createHarness({}, { bufferTimeoutMs: 1_000 });
+      const release = harness.provider.hold('Slow');
+
+      const pending = harness.engine.enqueue(request('g1', 'c1', ['Slow', 'Alpha']));
+      await vi.advanceTimersByTimeAsync(1_000);
+      const result = await pending;
+
+      expect(result.failure).toContain('вовремя');
+      expect(harness.provider.signals.get('Slow')?.aborted).toBe(true);
+      expect(harness.engine.snapshot('g1').nowPlaying?.track.title).toBe('Alpha');
+
+      release();
+      await flush();
+      await flush();
+      expect(harness.provider.opened.find((item) => item.title === 'Slow')?.closed).toBe(true);
+    });
+
+    it('reports why the first track could not start instead of claiming it was queued', async () => {
+      harness.provider.failTitles.add('Broken');
+
+      const result = await harness.engine.enqueue(request('g1', 'c1', ['Broken']));
+
+      expect(result).toEqual({ positions: [1], startedNow: false, failure: 'Файл недоступен.' });
+      expect(harness.engine.snapshot('g1')).toMatchObject({ nowPlaying: null, queue: [] });
+    });
+
+    it('logs a failure while handling a playback event instead of leaving it unobserved', async () => {
+      let failNext = false;
+      harness = createHarness(
+        {},
+        {
+          onChange: () => {
+            if (failNext) {
+              throw new Error('panel refresh exploded');
+            }
+          },
+        },
+      );
+      await harness.engine.enqueue(request('g1', 'c1', ['Alpha', 'Beta']));
+      harness.players[0]?.emitStart();
+      await flush();
+
+      failNext = true;
+      harness.players[0]?.emitEnd();
+      await flush();
+      await flush();
+      failNext = false;
+
+      expect(harness.errors.length).toBeGreaterThan(0);
     });
   });
 });
