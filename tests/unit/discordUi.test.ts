@@ -106,6 +106,19 @@ describe('music panel', () => {
     expect(payload.embeds[0]?.toJSON().title).toBe('⏸ На паузе');
   });
 
+  it('says the track is still loading instead of claiming it already plays', () => {
+    const payload = buildPanelPayload(
+      snapshot({
+        state: 'buffering',
+        voiceChannelId: 'c1',
+        nowPlaying: { track: track('Alpha'), elapsedMs: 0, paused: false },
+      }),
+      'Melody',
+    );
+
+    expect(payload.embeds[0]?.toJSON().title).toBe('⏳ Загружается');
+  });
+
   it('escapes markdown in track titles so they cannot change the layout', () => {
     const payload = buildPanelPayload(
       snapshot({

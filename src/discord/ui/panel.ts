@@ -93,7 +93,7 @@ function playingEmbed(snapshot: GuildSnapshot, botName: string): EmbedBuilder {
   const artist = track.artist !== null ? `\n${escapeMarkdown(truncate(track.artist, 100))}` : '';
 
   const embed = new EmbedBuilder()
-    .setTitle(playing.paused ? '⏸ На паузе' : '🎵 Сейчас играет')
+    .setTitle(panelTitle(snapshot.state, playing.paused))
     .setDescription(`**${escapeMarkdown(truncate(track.title, 200))}**${artist}`)
     .addFields(
       { name: 'Источник', value: SOURCE_LABELS[track.source], inline: true },
@@ -122,6 +122,14 @@ function playingEmbed(snapshot: GuildSnapshot, botName: string): EmbedBuilder {
     embed.addFields({ name: 'Далее', value: upcomingLines(snapshot.queue) });
   }
   return embed;
+}
+
+function panelTitle(state: GuildSnapshot['state'], paused: boolean): string {
+  if (paused) {
+    return '⏸ На паузе';
+  }
+  // A network source can take seconds to open; the panel says so instead of "playing".
+  return state === 'buffering' ? '⏳ Загружается' : '🎵 Сейчас играет';
 }
 
 function idleEmbed(snapshot: GuildSnapshot, botName: string): EmbedBuilder {

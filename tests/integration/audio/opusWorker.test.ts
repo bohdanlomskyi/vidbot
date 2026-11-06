@@ -140,4 +140,22 @@ describe('OpusWorkerEncoder', () => {
     expect(resource.volume).toBeUndefined();
     expect(packets).toHaveLength(50);
   });
+
+  it('stops its thread after an idle period and starts a new one for the next stream', async () => {
+    const idle = await OpusWorkerEncoder.start(silentLog, { idleMs: 50 });
+    if (idle === null) {
+      throw new Error('The Opus worker did not start');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(idle.running).toBe(false);
+
+    const encoded = idle.open(1);
+    const [packets] = await Promise.all([
+      collect(encoded.stream),
+      pipeline(pcmSource(tone(1)), encoded.stream),
+    ]);
+    expect(packets).toHaveLength(50);
+    expect(idle.running).toBe(true);
+    await idle.dispose();
+  });
 });

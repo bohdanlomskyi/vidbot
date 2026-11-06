@@ -69,6 +69,12 @@ parentPort.postMessage({ op: 'ready' });
 `;
 
 const START_TIMEOUT_MS = 10_000;
+/** A thread with no streams for this long is stopped, which returns its memory (about 27 MB). */
+const IDLE_MS = 60_000;
+
+export interface OpusWorkerOptions {
+  readonly idleMs?: number;
+}
 
 type WorkerReply =
   | { readonly op: 'ready' }
@@ -91,23 +97,29 @@ type EncoderLog = Pick<Logger, 'warn' | 'error'>;
  * with no FFmpeg restart and no extra process. Each stream has at most one chunk in flight,
  * which keeps backpressure from the voice player all the way back to FFmpeg.
  *
- * If the worker dies, its streams fail like any broken source and the next stream starts a
- * new worker. If it cannot start at all, start() returns null and the caller keeps the
- * in-process encoder.
+ * The thread stops after a minute without streams and starts again with the next stream, so
+ * an idle bot does not keep its memory. If the worker dies, its streams fail like any broken
+ * source and the next stream starts a new worker. If it cannot start at all, start() returns
+ * null and the caller keeps the in-process encoder.
  */
 export class OpusWorkerEncoder {
   private worker: Worker | null = null;
   private nextId = 1;
   private readonly streams = new Map<number, WorkerEncodeStream>();
   private disposed = false;
+  private idleTimer: NodeJS.Timeout | undefined;
 
   private constructor(
     private readonly opusPath: string,
     private readonly log: EncoderLog,
+    private readonly idleMs: number,
   ) {}
 
   /** Starts the worker and waits until libopus has loaded in it. Null when that fails. */
-  static async start(log: EncoderLog): Promise<OpusWorkerEncoder | null> {
+  static async start(
+    log: EncoderLog,
+    options: OpusWorkerOptions = {},
+  ): Promise<OpusWorkerEncoder | null> {
     let opusPath: string;
     try {
       opusPath = createRequire(import.meta.url).resolve('@discordjs/opus');
@@ -115,7 +127,7 @@ export class OpusWorkerEncoder {
       log.warn({ err: error }, 'Opus worker unavailable; encoding on the main thread');
       return null;
     }
-    const encoder = new OpusWorkerEncoder(opusPath, log);
+    const encoder = new OpusWorkerEncoder(opusPath, log, options.idleMs ?? IDLE_MS);
     const worker = encoder.spawn();
     const ready = await new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => {
@@ -135,6 +147,7 @@ export class OpusWorkerEncoder {
       await encoder.dispose();
       return null;
     }
+    encoder.scheduleIdleStop();
     return encoder;
   }
 
@@ -143,7 +156,13 @@ export class OpusWorkerEncoder {
     return this.streams.size;
   }
 
+  /** Whether the worker thread exists right now. */
+  get running(): boolean {
+    return this.worker !== null;
+  }
+
   open(gain: number): EncodedStream {
+    clearTimeout(this.idleTimer);
     const id = this.nextId;
     this.nextId += 1;
     const stream = new WorkerEncodeStream(this, id);
@@ -161,6 +180,7 @@ export class OpusWorkerEncoder {
 
   async dispose(): Promise<void> {
     this.disposed = true;
+    clearTimeout(this.idleTimer);
     const worker = this.worker;
     this.worker = null;
     for (const stream of [...this.streams.values()]) {
@@ -179,7 +199,25 @@ export class OpusWorkerEncoder {
   release(id: number): void {
     if (this.streams.delete(id)) {
       this.post({ op: 'close', id });
+      this.scheduleIdleStop();
     }
+  }
+
+  private scheduleIdleStop(): void {
+    if (this.streams.size > 0 || this.disposed) {
+      return;
+    }
+    clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => {
+      const worker = this.worker;
+      if (this.streams.size > 0 || worker === null) {
+        return;
+      }
+      // Detach first, so the exit of a deliberately stopped thread fails no stream.
+      this.worker = null;
+      void worker.terminate();
+    }, this.idleMs);
+    this.idleTimer.unref();
   }
 
   private post(message: object, transfer: ArrayBuffer[] = []): void {
