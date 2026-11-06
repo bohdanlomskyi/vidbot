@@ -431,6 +431,7 @@ describe('MusicEngine', () => {
       expect(harness.voice.active[0]?.subscribedTo).toBe(harness.players[0]);
       expect(harness.voice.active[0]?.lossHandlerCount).toBe(1);
       expect(harness.engine.snapshot('g1')).toMatchObject({ voiceChannelId: 'c2' });
+      expect(harness.engine.voiceChannelOf('g1')).toBe('c2');
       expect(harness.engine.snapshot('g1').queue.map((item) => item.title)).toEqual(['Beta']);
       expect(harness.engine.snapshot('g1').nowPlaying?.track.title).toBe('Alpha');
     });

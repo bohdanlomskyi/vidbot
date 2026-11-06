@@ -39,18 +39,35 @@ export interface LibraryCatalogOptions {
   readonly probeConcurrency?: number;
 }
 
+/** A row with its search text lowered once, instead of on every keystroke of autocomplete. */
+interface IndexedRow {
+  readonly row: LibraryRow;
+  readonly title: string;
+  readonly text: string;
+}
+
+const collator = new Intl.Collator();
+
+function indexed(row: LibraryRow): IndexedRow {
+  const title = row.title.toLowerCase();
+  const text = [title, row.artist?.toLowerCase() ?? '', row.relativePath.toLowerCase()].join('\n');
+  return { row, title, text };
+}
+
 /**
  * The in-memory index of the music library, kept in step with the store. A file is
  * probed again only when its size or modification time changes. Concurrent refreshes
  * share one run.
  */
 export class LibraryCatalog {
-  private readonly index = new Map<string, LibraryRow>();
+  private readonly index = new Map<string, IndexedRow>();
+  /** The index in title order, rebuilt lazily after the index changes. */
+  private byTitle: IndexedRow[] | null = null;
   private running: Promise<RefreshSummary> | undefined;
 
   constructor(private readonly options: LibraryCatalogOptions) {
     for (const row of options.store.loadAll()) {
-      this.index.set(row.id, row);
+      this.index.set(row.id, indexed(row));
     }
   }
 
@@ -59,39 +76,42 @@ export class LibraryCatalog {
   }
 
   get(id: string): LibraryRow | undefined {
-    return this.index.get(id);
+    return this.index.get(id)?.row;
   }
 
   /**
    * Finds tracks whose title, artist or path contains the query. Results are ranked:
-   * exact title, then title prefix, then any other match.
+   * exact title, then title prefix, then any other match, alphabetically within a rank.
+   * One pass over the index in title order fills the ranks, so nothing is sorted per query.
    */
   search(query: string, limit = 10): LibraryRow[] {
     const needle = query.trim().toLowerCase().replace(/\s+/g, ' ');
-    if (needle === '') {
+    if (needle === '' || limit <= 0) {
       return [];
     }
 
-    const scored: { row: LibraryRow; score: number }[] = [];
-    for (const row of this.index.values()) {
-      const title = row.title.toLowerCase();
-      const score =
-        title === needle
-          ? 3
-          : title.startsWith(needle)
-            ? 2
-            : [title, row.artist?.toLowerCase() ?? '', row.relativePath.toLowerCase()].some(
-                  (text) => text.includes(needle),
-                )
-              ? 1
-              : 0;
-      if (score > 0) {
-        scored.push({ row, score });
+    const exact: LibraryRow[] = [];
+    const prefix: LibraryRow[] = [];
+    const other: LibraryRow[] = [];
+    for (const entry of this.sortedByTitle()) {
+      if (entry.title === needle) {
+        exact.push(entry.row);
+      } else if (entry.title.startsWith(needle)) {
+        if (prefix.length < limit) {
+          prefix.push(entry.row);
+        }
+      } else if (other.length < limit && entry.text.includes(needle)) {
+        other.push(entry.row);
       }
     }
+    return [...exact, ...prefix, ...other].slice(0, limit);
+  }
 
-    scored.sort((a, b) => b.score - a.score || a.row.title.localeCompare(b.row.title));
-    return scored.slice(0, limit).map((entry) => entry.row);
+  private sortedByTitle(): readonly IndexedRow[] {
+    this.byTitle ??= [...this.index.values()].sort((a, b) =>
+      collator.compare(a.row.title, b.row.title),
+    );
+    return this.byTitle;
   }
 
   refresh(): Promise<RefreshSummary> {
@@ -116,14 +136,15 @@ export class LibraryCatalog {
           const existing = this.index.get(id);
           if (
             existing !== undefined &&
-            existing.sizeBytes === file.sizeBytes &&
-            existing.mtimeMs === file.mtimeMs
+            existing.row.sizeBytes === file.sizeBytes &&
+            existing.row.mtimeMs === file.mtimeMs
           ) {
             return;
           }
           const row = await this.buildRow(file, id).catch(() => null);
           if (row !== null) {
-            this.index.set(id, row);
+            this.index.set(id, indexed(row));
+            this.byTitle = null;
             changed.push(row);
           }
         }),
@@ -133,6 +154,7 @@ export class LibraryCatalog {
     const removedIds = [...this.index.keys()].filter((id) => !seen.has(id));
     for (const id of removedIds) {
       this.index.delete(id);
+      this.byTitle = null;
     }
     if (removedIds.length > 0) {
       this.options.store.deleteIds(removedIds);

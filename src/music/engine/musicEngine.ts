@@ -322,6 +322,11 @@ export class MusicEngine {
 
   // ---------- reads ----------
 
+  /** The voice channel the guild's session is in, or null. Cheaper than a full snapshot. */
+  voiceChannelOf(guildId: string): string | null {
+    return this.sessions.get(guildId)?.voiceChannelId ?? null;
+  }
+
   snapshot(guildId: string): GuildSnapshot {
     const session = this.sessions.get(guildId);
     if (session !== undefined) {

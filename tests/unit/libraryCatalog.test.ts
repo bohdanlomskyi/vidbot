@@ -136,4 +136,49 @@ describe('LibraryCatalog', () => {
 
     expect(library.search('   ')).toEqual([]);
   });
+
+  it('ranks exact, then prefix, then artist or path matches, alphabetically within each rank', () => {
+    const row = (id: string, title: string, artist: string | null, relativePath: string) => ({
+      id,
+      title,
+      artist,
+      relativePath,
+      folder: '',
+      durationSec: 60,
+      sizeBytes: 1,
+      mtimeMs: 1,
+    });
+    store.save([
+      row('lib-000000000001', 'Zebra Rock', 'Rock Band', 'z.mp3'),
+      row('lib-000000000002', 'rock', null, 'r.mp3'),
+      row('lib-000000000003', 'Rocket', null, 'rocket.mp3'),
+      row('lib-000000000004', 'Alpha', null, 'Rock/alpha.mp3'),
+      row('lib-000000000005', 'Ballad', 'Someone', 'ballad.mp3'),
+      row('lib-000000000006', 'Rockabilly', null, 'b.mp3'),
+    ]);
+    const library = catalog();
+
+    expect(library.search('ROCK').map((item) => item.title)).toEqual([
+      'rock',
+      'Rockabilly',
+      'Rocket',
+      'Alpha',
+      'Zebra Rock',
+    ]);
+    expect(library.search('rock', 2).map((item) => item.title)).toEqual(['rock', 'Rockabilly']);
+    expect(library.search('someone').map((item) => item.title)).toEqual(['Ballad']);
+  });
+
+  it('finds tracks added by a later scan and forgets deleted ones', async () => {
+    const library = catalog();
+    expect(library.search('fresh')).toEqual([]);
+
+    await writeFile(path.join(musicDir, 'Fresh Song.mp3'), 'x');
+    await library.refresh();
+    expect(library.search('fresh').map((item) => item.title)).toEqual(['Fresh Song']);
+
+    await rm(path.join(musicDir, 'Fresh Song.mp3'));
+    await library.refresh();
+    expect(library.search('fresh')).toEqual([]);
+  });
 });

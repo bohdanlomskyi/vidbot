@@ -43,7 +43,16 @@ async function onVoiceStateUpdate(
       await services.engine.handleBotVoiceChange(guildId, newState.channelId);
       return;
     }
-    if (oldState.channelId !== newState.channelId) {
+    if (oldState.channelId === newState.channelId) {
+      return;
+    }
+    // Only the bot's own channel matters. Moves elsewhere in a busy server would otherwise
+    // re-check timers and redraw the panel for nothing.
+    const botChannel = services.engine.voiceChannelOf(guildId);
+    if (
+      botChannel !== null &&
+      (oldState.channelId === botChannel || newState.channelId === botChannel)
+    ) {
       await services.engine.handleListenersChanged(guildId);
     }
   } catch (error) {

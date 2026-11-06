@@ -37,6 +37,7 @@ function fakeServices() {
       Promise.resolve(),
     ),
     handleListenersChanged: vi.fn<(guildId: string) => Promise<void>>(() => Promise.resolve()),
+    voiceChannelOf: vi.fn<(guildId: string) => string | null>(() => 'channel-1'),
   };
   const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   return { services: { engine, logger } as unknown as AppServices, engine, logger };
@@ -108,6 +109,24 @@ describe('wireClient', () => {
     expect(engine.handleListenersChanged).toHaveBeenCalledTimes(2);
     expect(engine.handleListenersChanged).toHaveBeenCalledWith('guild-1');
     expect(engine.handleBotVoiceChange).not.toHaveBeenCalled();
+  });
+
+  it('ignores members moving between channels the bot is not in', async () => {
+    const { client, emit } = captureClient();
+    const { services, engine } = fakeServices();
+    wireClient(client, services);
+
+    emit(Events.VoiceStateUpdate, voiceState('user-1', null), voiceState('user-1', 'channel-7'));
+    emit(
+      Events.VoiceStateUpdate,
+      voiceState('user-1', 'channel-7'),
+      voiceState('user-1', 'channel-8'),
+    );
+    engine.voiceChannelOf.mockReturnValueOnce(null);
+    emit(Events.VoiceStateUpdate, voiceState('user-2', null), voiceState('user-2', 'channel-1'));
+    await flush();
+
+    expect(engine.handleListenersChanged).not.toHaveBeenCalled();
   });
 
   it('ignores voice updates that do not change the channel, such as mute or deafen', async () => {
