@@ -1,116 +1,96 @@
 /**
- * CPU cost of turning decoded audio into Opus packets inside the bot process.
+ * CPU cost of turning decoded audio into the Opus packets the voice player sends.
  *
- * Each variant feeds the same 60 s of stereo noise through FFmpeg and @discordjs/voice and
- * reads every Opus packet the AudioPlayer would send, as fast as possible. The numbers are
- * the CPU time of the bot's main thread, which also runs every Discord event and command
- * (FFmpeg runs in a child process, an encoder worker in its own thread).
+ * Each variant decodes the same 60 s of stereo pink noise with FFmpeg and reads every packet
+ * through the bot's own createPlayerResource, as fast as possible. Two numbers are reported:
+ * - main thread: CPU time on the thread that also runs every Discord event and command;
+ * - whole process: main thread plus the Opus worker thread (FFmpeg is a child process and is
+ *   the same in every variant, so it is left out).
  * Noise is used because it is the hardest input for an Opus encoder.
  *
  *   npx tsx bench/pipeline.bench.ts
  */
 import { spawn } from 'node:child_process';
-import { performance } from 'node:perf_hooks';
-import type { Readable } from 'node:stream';
-import { createAudioResource, StreamType } from '@discordjs/voice';
+import { OpusWorkerEncoder } from '../src/audio/opus/opusWorkerEncoder.js';
 import { buildFfmpegArgs } from '../src/audio/pipeline/ffmpeg.js';
+import { createPlayerResource } from '../src/discord/voice/discordVoice.js';
 
 const SECONDS = 60;
+const ROUNDS = 5;
 const FFMPEG = process.env.FFMPEG_PATH ?? 'ffmpeg';
-const ROUNDS = 3;
+const GAIN = 0.7;
 
-interface Variant {
-  readonly name: string;
-  readonly args: string[];
-  readonly inputType: StreamType;
-  readonly inlineVolume: boolean;
-}
-
-const source = ['-f', 'lavfi', '-i', `anoisesrc=d=${String(SECONDS)}:c=pink:a=0.3`];
 const pcmArgs = buildFfmpegArgs({ kind: 'file', path: 'unused' });
-const pcmOutput = pcmArgs.slice(pcmArgs.indexOf('-map') + 2);
-
-const VARIANTS: readonly Variant[] = [
-  {
-    name: 'PCM + inline volume + Opus in Node (before)',
-    args: ['-hide_banner', '-loglevel', 'error', ...source, ...pcmOutput],
-    inputType: StreamType.Raw,
-    inlineVolume: true,
-  },
-  {
-    name: 'PCM + Opus in Node, no inline volume',
-    args: ['-hide_banner', '-loglevel', 'error', ...source, ...pcmOutput],
-    inputType: StreamType.Raw,
-    inlineVolume: false,
-  },
-  {
-    name: 'Opus encoded by FFmpeg, Ogg demuxed in Node',
-    args: [
-      '-hide_banner',
-      '-loglevel',
-      'error',
-      ...source,
-      '-ar',
-      '48000',
-      '-ac',
-      '2',
-      '-c:a',
-      'libopus',
-      '-b:a',
-      '128k',
-      '-frame_duration',
-      '20',
-      '-f',
-      'ogg',
-      'pipe:1',
-    ],
-    inputType: StreamType.OggOpus,
-    inlineVolume: false,
-  },
+const decodeArgs = [
+  '-hide_banner',
+  '-loglevel',
+  'error',
+  '-f',
+  'lavfi',
+  '-i',
+  `anoisesrc=d=${String(SECONDS)}:c=pink:a=0.3`,
+  ...pcmArgs.slice(pcmArgs.indexOf('-map') + 2),
 ];
 
-async function measure(
-  variant: Variant,
-): Promise<{ cpuMs: number; wallMs: number; packets: number }> {
-  const child = spawn(FFMPEG, variant.args, { stdio: ['ignore', 'pipe', 'inherit'] });
-  const stdout: Readable = child.stdout;
-  const resource = createAudioResource(stdout, {
-    inputType: variant.inputType,
-    inlineVolume: variant.inlineVolume,
-  });
-  resource.volume?.setVolume(0.7);
+interface Sample {
+  readonly mainMs: number;
+  readonly processMs: number;
+  readonly packets: number;
+}
 
-  const cpuStart = process.threadCpuUsage();
-  const wallStart = performance.now();
+async function measure(encoder: OpusWorkerEncoder | null): Promise<Sample> {
+  const child = spawn(FFMPEG, decodeArgs, { stdio: ['ignore', 'pipe', 'inherit'] });
+  // FFmpeg can exit before the last packets are read, so listen for that from the start.
+  const exited = new Promise((resolve) => child.once('close', resolve));
+  const { resource } = createPlayerResource(child.stdout, GAIN, encoder);
+
+  const mainStart = process.threadCpuUsage();
+  const processStart = process.cpuUsage();
   let packets = 0;
   resource.playStream.on('data', () => {
     packets += 1;
   });
   await new Promise((resolve) => resource.playStream.once('end', resolve));
-  const cpu = process.threadCpuUsage(cpuStart);
-  const wallMs = performance.now() - wallStart;
-  await new Promise((resolve) => child.once('close', resolve));
-  return { cpuMs: (cpu.user + cpu.system) / 1000, wallMs, packets };
+  const main = process.threadCpuUsage(mainStart);
+  const whole = process.cpuUsage(processStart);
+  await exited;
+  return {
+    mainMs: (main.user + main.system) / 1000,
+    processMs: (whole.user + whole.system) / 1000,
+    packets,
+  };
 }
 
-async function main(): Promise<void> {
-  console.log(`Audio: ${String(SECONDS)} s pink noise, ${String(ROUNDS)} rounds, median shown`);
-  for (const variant of VARIANTS) {
-    const runs = [];
-    for (let round = 0; round < ROUNDS; round += 1) {
-      runs.push(await measure(variant));
-    }
-    runs.sort((a, b) => a.cpuMs - b.cpuMs);
-    const median = runs[Math.floor(runs.length / 2)];
-    if (median === undefined) {
-      continue;
-    }
-    const perAudioSecond = median.cpuMs / SECONDS;
-    console.log(
-      `${variant.name}\n  bot CPU: ${median.cpuMs.toFixed(0)} ms total, ${perAudioSecond.toFixed(2)} ms per audio second ` +
-        `(${((perAudioSecond / 1000) * 100).toFixed(2)} % of one core per stream), packets: ${String(median.packets)}`,
-    );
+function median(values: readonly number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)] ?? 0;
+}
+
+async function report(name: string, encoder: OpusWorkerEncoder | null): Promise<void> {
+  await measure(encoder);
+  const samples: Sample[] = [];
+  for (let round = 0; round < ROUNDS; round += 1) {
+    samples.push(await measure(encoder));
   }
+  const main = median(samples.map((sample) => sample.mainMs));
+  const whole = median(samples.map((sample) => sample.processMs));
+  const perSecond = main / SECONDS;
+  console.log(
+    `${name}\n` +
+      `  main thread: ${main.toFixed(0)} ms (${perSecond.toFixed(2)} ms per audio second, ` +
+      `${((perSecond / 1000) * 100).toFixed(2)} % of a core per stream)\n` +
+      `  whole process: ${whole.toFixed(0)} ms, packets: ${String(samples[0]?.packets ?? 0)}`,
+  );
 }
 
-await main();
+const worker = await OpusWorkerEncoder.start(console);
+console.log(
+  `${String(SECONDS)} s of pink noise at gain ${String(GAIN)}, median of ${String(ROUNDS)}`,
+);
+await report('Before: Opus and volume on the main thread', null);
+if (worker === null) {
+  console.log('The Opus worker did not start');
+} else {
+  await report('After: Opus and volume in the worker thread', worker);
+  await worker.dispose();
+}

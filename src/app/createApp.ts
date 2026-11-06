@@ -12,6 +12,7 @@ import {
 import { LocalAudioProvider } from '../audio/providers/localProvider.js';
 import { YouTubeExperimentalProvider } from '../audio/providers/youtubeProvider.js';
 import type { AudioProvider } from '../audio/providers/types.js';
+import { OpusWorkerEncoder } from '../audio/opus/opusWorkerEncoder.js';
 import { probeAudioFile } from '../audio/pipeline/probe.js';
 import type { AppConfig } from '../config/load.js';
 import { checkDatabase, openDatabase } from '../database/db.js';
@@ -119,12 +120,14 @@ export async function createApp(config: AppConfig, logger: Logger): Promise<App>
   const sources = new SourceRouter({ local, streams, youtube });
   const providerByKind: Record<SourceKind, AudioProvider> = { local, stream: streams, youtube };
 
+  // Opus is encoded in a worker thread when it starts; otherwise on the main thread as before.
+  const opusEncoder = await OpusWorkerEncoder.start(logger);
   const client: Client = createClient();
   // The panel needs the engine, and the engine notifies the panel. The holder breaks that cycle.
   const panelHolder: { panel?: PanelManager } = {};
   const engine = new MusicEngine({
     voice: new DiscordVoicePort(client, logger),
-    createPlayer: () => new DiscordAudioPlayer(),
+    createPlayer: () => new DiscordAudioPlayer(opusEncoder),
     providers: (kind) => providerByKind[kind],
     listeners: (guildId, channelId) => countListeners(client, guildId, channelId),
     settings: (guildId) => toPlaybackSettings(settings.get(guildId)),
@@ -199,6 +202,7 @@ export async function createApp(config: AppConfig, logger: Logger): Promise<App>
     // The engine's teardown requests panel refreshes, so the panel is disposed after it.
     await engine.shutdown();
     panel.dispose();
+    await opusEncoder?.dispose();
     await client.destroy();
     await Promise.all([local.dispose(), streams.dispose(), youtube.dispose()]);
     db.close();

@@ -1,4 +1,4 @@
-import type { Readable } from 'node:stream';
+import { pipeline, type Readable } from 'node:stream';
 import {
   AudioPlayerStatus,
   createAudioPlayer,
@@ -15,6 +15,7 @@ import {
 } from '@discordjs/voice';
 import type { Client } from 'discord.js';
 import type { Logger } from 'pino';
+import type { OpusWorkerEncoder } from '../../audio/opus/opusWorkerEncoder.js';
 import type {
   AudioPlayerPort,
   PlaybackCallbacks,
@@ -164,8 +165,42 @@ class DiscordVoiceConnection implements VoiceConnectionPort {
   }
 }
 
+export interface PlayerResource {
+  readonly resource: AudioResource;
+  /** Changes the gain of this resource from now on. */
+  readonly setGain: (gain: number) => void;
+}
+
+/**
+ * Builds the audio resource for decoded PCM. With the worker, Opus is encoded off the main
+ * thread and the player receives finished packets. Without it, @discordjs/voice encodes on
+ * the main thread and applies the gain with its inline volume transformer.
+ */
+export function createPlayerResource(
+  pcm: Readable,
+  gain: number,
+  encoder: OpusWorkerEncoder | null,
+): PlayerResource {
+  if (encoder !== null) {
+    const encoded = encoder.open(gain);
+    // pipeline destroys both ends on failure, so the player sees a broken source as an error.
+    pipeline(pcm, encoded.stream, () => undefined);
+    const resource = createAudioResource(encoded.stream, { inputType: StreamType.Opus });
+    return { resource, setGain: encoded.setGain };
+  }
+  const resource = createAudioResource(pcm, { inputType: StreamType.Raw, inlineVolume: true });
+  resource.volume?.setVolume(gain);
+  return {
+    resource,
+    setGain: (next) => {
+      resource.volume?.setVolume(next);
+    },
+  };
+}
+
 interface ActivePlayback {
   readonly resource: AudioResource;
+  readonly setGain: (gain: number) => void;
   readonly callbacks: PlaybackCallbacks;
   started: boolean;
 }
@@ -180,7 +215,7 @@ export class DiscordAudioPlayer implements AudioPlayerPort {
   private active: ActivePlayback | null = null;
   private gain = 1;
 
-  constructor() {
+  constructor(private readonly encoder: OpusWorkerEncoder | null = null) {
     this.handle = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause } });
     this.handle.on('stateChange', (oldState, newState) => {
       const playback = this.active;
@@ -212,9 +247,8 @@ export class DiscordAudioPlayer implements AudioPlayerPort {
   }
 
   play(stream: Readable, callbacks: PlaybackCallbacks): void {
-    const resource = createAudioResource(stream, { inputType: StreamType.Raw, inlineVolume: true });
-    resource.volume?.setVolume(this.gain);
-    this.active = { resource, callbacks, started: false };
+    const { resource, setGain } = createPlayerResource(stream, this.gain, this.encoder);
+    this.active = { resource, setGain, callbacks, started: false };
     this.handle.play(resource);
   }
 
@@ -233,7 +267,7 @@ export class DiscordAudioPlayer implements AudioPlayerPort {
 
   setVolume(gain: number): void {
     this.gain = gain;
-    this.active?.resource.volume?.setVolume(gain);
+    this.active?.setGain(gain);
   }
 
   destroy(): void {
