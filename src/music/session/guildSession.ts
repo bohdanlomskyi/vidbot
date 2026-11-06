@@ -21,6 +21,8 @@ export interface CurrentPlayback {
   /** Settles once, when the source has been handed to the player or the attempt has ended. */
   readonly start: PromiseWithResolvers<StartResult>;
   playable: PlayableSource | null;
+  /** Set once the player reports audio. A track that ends without it never played. */
+  started: boolean;
   finished: boolean;
   /** Milliseconds of audible playback accumulated before the latest pause. */
   playedMs: number;

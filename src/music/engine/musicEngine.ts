@@ -61,6 +61,7 @@ export interface MusicEngineOptions {
 
 const BUFFER_TIMEOUT_MS = 20_000;
 const BUFFER_TIMEOUT_MESSAGE = 'Не удалось начать воспроизведение вовремя.';
+const NEVER_PLAYED_MESSAGE = 'трек пуст или повреждён.';
 /** Pauses between voice reconnection attempts. The list length is the attempt limit. */
 const RECONNECT_DELAYS_MS: readonly number[] = [1_000, 3_000, 8_000];
 const NOTHING_PLAYING = 'Сейчас ничего не играет.';
@@ -307,15 +308,19 @@ export class MusicEngine {
         await this.teardown(session, 'kicked', 'Бота отключили от голосового канала.');
         return;
       }
-      if (session.connection.channelId === channelId) {
+      if (session.connection.channelId === channelId && session.voiceChannelId === channelId) {
         return;
       }
-      try {
-        await this.connect(session, channelId);
-      } catch {
-        await this.teardown(session, 'lost', 'Не удалось перейти в канал, куда переместили бота.');
-        return;
+      // The library usually follows the move on its own; connect only when it has not.
+      if (session.connection.channelId !== channelId) {
+        try {
+          await this.connect(session, channelId);
+        } catch {
+          await this.teardown(session, 'lost', 'Не удалось перейти в канал, куда переместили бота.');
+          return;
+        }
       }
+      session.voiceChannelId = channelId;
       this.afterChange(session);
     });
   }
@@ -464,6 +469,7 @@ export class MusicEngine {
       controller: new AbortController(),
       start: Promise.withResolvers<StartResult>(),
       playable: null,
+      started: false,
       finished: false,
       playedMs: 0,
       playingSince: null,
@@ -507,16 +513,17 @@ export class MusicEngine {
 
     if (outcome.kind === 'timeout') {
       playback.controller.abort();
-      opening.then(
-        (late) => late.close(),
-        () => undefined,
-      );
+      opening
+        .then((late) => late.close())
+        .catch((error: unknown) => {
+          this.log.warn({ err: error }, 'A source that opened too late could not be closed');
+        });
     }
     if (this.stopped) {
-      if (outcome.kind === 'opened') {
-        await outcome.playable.close();
-      }
       playback.start.resolve({ outcome: 'cancelled' });
+      if (outcome.kind === 'opened') {
+        await outcome.playable.close().catch(() => undefined);
+      }
       return;
     }
     this.background(session.guildId, () => this.attach(session, playback, outcome));
@@ -607,14 +614,18 @@ export class MusicEngine {
     session.player.stop();
     await playback.playable?.close();
 
-    if (outcome === 'completed') {
+    // A source that ends before any audio played (an empty or broken file) is a failure.
+    // Counting it as completed would replay it in a tight loop under track repeat.
+    const neverPlayed = outcome === 'completed' && !playback.started;
+    if (outcome === 'completed' && !neverPlayed) {
       if (session.loop === 'track') {
         session.pendingReplay = playback.track;
       } else if (session.loop === 'queue') {
         session.queue.pushBack(playback.track);
       }
     } else {
-      this.reportFailure(session, playback.track, message ?? 'ошибка воспроизведения.');
+      const reason = neverPlayed ? NEVER_PLAYED_MESSAGE : (message ?? 'ошибка воспроизведения.');
+      this.reportFailure(session, playback.track, reason);
     }
 
     this.playNext(session);
@@ -626,6 +637,7 @@ export class MusicEngine {
     if (playback === null || playback.token !== token || playback.finished) {
       return;
     }
+    playback.started = true;
     playback.playingSince = this.now();
     this.setState(session, 'playing');
     this.emit({ type: 'track_started', guildId: session.guildId, track: playback.track });

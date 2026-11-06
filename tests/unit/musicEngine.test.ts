@@ -173,6 +173,20 @@ describe('MusicEngine', () => {
       expect(harness.engine.snapshot('g1').queue.map((item) => item.title)).toEqual(['Beta']);
     });
 
+    it('does not replay forever a track that ended without ever playing', async () => {
+      await harness.engine.setLoop('g1', 'track');
+      await harness.engine.enqueue(request('g1', 'c1', ['Empty', 'Next']));
+
+      // An empty or broken file: the player goes idle without ever reaching "playing".
+      harness.players[0]?.emitEnd();
+      await flush();
+      await flush();
+
+      expect(harness.players[0]?.played).toHaveLength(2);
+      expect(harness.engine.snapshot('g1').nowPlaying?.track.title).toBe('Next');
+      expect(harness.engine.snapshot('g1').notice).toContain('Empty');
+    });
+
     it('moves each finished track to the back of the queue in queue mode', async () => {
       await harness.engine.setLoop('g1', 'queue');
       await harness.engine.enqueue(request('g1', 'c1', ['Alpha', 'Beta']));
@@ -474,6 +488,21 @@ describe('MusicEngine', () => {
       expect(harness.voice.active.map((connection) => connection.channelId)).toEqual(['c9']);
       expect(harness.voice.active[0]?.subscribedTo).toBe(harness.players[0]);
       expect(harness.engine.snapshot('g1')).toMatchObject({ voiceChannelId: 'c9' });
+    });
+
+    it('counts listeners in the new channel when the connection already followed an administrator move', async () => {
+      await harness.engine.enqueue(request('g1', 'c1', ['Alpha']));
+      // @discordjs/voice updates its connection from the bot's own voice state first.
+      const live = harness.voice.active[0];
+      if (live !== undefined) {
+        live.channelId = 'c9';
+      }
+
+      await harness.engine.handleBotVoiceChange('g1', 'c9');
+
+      expect(harness.engine.snapshot('g1')).toMatchObject({ voiceChannelId: 'c9' });
+      expect(harness.engine.voiceChannelOf('g1')).toBe('c9');
+      expect(harness.voice.connections).toHaveLength(1);
     });
 
     it('treats the bot being disconnected by an administrator as a stop', async () => {

@@ -172,7 +172,7 @@ export class OpusWorkerEncoder {
       stream,
       setGain: (next) => {
         if (this.streams.has(id)) {
-          this.post({ op: 'gain', id, gain: next });
+          this.worker?.postMessage({ op: 'gain', id, gain: next });
         }
       },
     };
@@ -198,7 +198,9 @@ export class OpusWorkerEncoder {
   /** @internal Called once when a stream ends or is destroyed. */
   release(id: number): void {
     if (this.streams.delete(id)) {
-      this.post({ op: 'close', id });
+      // Only a running worker holds the encoder. A stopped one needs no message, and
+      // sending one would start a new thread for nothing.
+      this.worker?.postMessage({ op: 'close', id });
       this.scheduleIdleStop();
     }
   }
