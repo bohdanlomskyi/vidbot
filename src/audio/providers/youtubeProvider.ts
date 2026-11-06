@@ -56,7 +56,10 @@ export class YouTubeExperimentalProvider implements AudioProvider {
   readonly kind = 'youtube' as const;
   readonly enabled: boolean;
   private readonly breaker: FailureBreaker;
-  private readonly slots: Semaphore;
+  /** Held for the whole playback, so the limit covers concurrent yt-dlp downloads. */
+  private readonly streamSlots: Semaphore;
+  /** Short lookups have their own slots, so links still resolve while streams play. */
+  private readonly metadataSlots: Semaphore;
   private readonly base: YtDlpBaseOptions;
   private readonly timeoutMs: number;
   private readonly now: () => number;
@@ -67,7 +70,8 @@ export class YouTubeExperimentalProvider implements AudioProvider {
       threshold: options.breakerThreshold ?? 5,
       cooldownMs: options.breakerCooldownMs ?? 600_000,
     });
-    this.slots = new Semaphore(options.maxConcurrency);
+    this.streamSlots = new Semaphore(options.maxConcurrency);
+    this.metadataSlots = new Semaphore(options.maxConcurrency);
     this.base = { jsRuntime: options.jsRuntime, cacheDir: options.cacheDir };
     this.timeoutMs = options.timeoutSec * 1000;
     this.now = options.now ?? Date.now;
@@ -142,8 +146,8 @@ export class YouTubeExperimentalProvider implements AudioProvider {
       throw new AppError('CANCELLED', 'Воспроизведение отменено.');
     }
 
-    // The slot is held for the whole playback, so the concurrency limit covers streams too.
-    const release = await this.slots.acquire();
+    // The slot is held for the whole playback. Waiting for it ends when the track is cancelled.
+    const release = await this.streamSlots.acquire(signal);
     let child: StreamingProcess | undefined;
     try {
       child = spawnStreamingProcess(this.options.ytdlpPath, buildStreamArgs(url, this.base));
@@ -235,6 +239,7 @@ export class YouTubeExperimentalProvider implements AudioProvider {
       | { readonly kind: 'aborted' };
 
     let timer: NodeJS.Timeout | undefined;
+    let onAbort: () => void = () => undefined;
     const outcome = await Promise.race<Outcome>([
       firstBytes.then((): Outcome => ({ kind: 'data' })),
       child.exit.then((exit): Outcome => ({ kind: 'exit', exit })),
@@ -244,16 +249,14 @@ export class YouTubeExperimentalProvider implements AudioProvider {
         }, this.timeoutMs);
       }),
       new Promise<Outcome>((resolve) => {
-        signal.addEventListener(
-          'abort',
-          () => {
-            resolve({ kind: 'aborted' });
-          },
-          { once: true },
-        );
+        onAbort = () => {
+          resolve({ kind: 'aborted' });
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
       }),
     ]).finally(() => {
       clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
     });
 
     switch (outcome.kind) {
@@ -283,7 +286,7 @@ export class YouTubeExperimentalProvider implements AudioProvider {
   }
 
   private async runMetadata(args: readonly string[], signal: AbortSignal): Promise<string> {
-    const release = await this.slots.acquire();
+    const release = await this.metadataSlots.acquire(signal);
     try {
       const run = await runJson(this.options.ytdlpPath, args, {
         timeoutMs: this.timeoutMs,

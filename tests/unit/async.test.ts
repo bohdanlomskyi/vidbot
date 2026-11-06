@@ -1,32 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Semaphore, withTimeout } from '../../src/utils/async.js';
-
-describe('withTimeout', () => {
-  it('resolves with the value when the work finishes in time', async () => {
-    await expect(withTimeout(Promise.resolve('ok'), 1_000, 'Слишком долго.')).resolves.toBe('ok');
-  });
-
-  it('rejects with a TIMEOUT application error when the work runs too long', async () => {
-    const neverFinishes = new Promise<never>(() => undefined);
-
-    const error: unknown = await withTimeout(
-      neverFinishes,
-      20,
-      'Источник не ответил вовремя.',
-    ).catch((caught: unknown) => caught);
-
-    expect(error).toMatchObject({
-      code: 'TIMEOUT',
-      userMessage: 'Источник не ответил вовремя.',
-    });
-  });
-
-  it('passes through the original rejection when the work fails before the deadline', async () => {
-    await expect(withTimeout(Promise.reject(new Error('boom')), 1_000, 'x')).rejects.toThrow(
-      'boom',
-    );
-  });
-});
+import { Semaphore } from '../../src/utils/async.js';
 
 describe('Semaphore', () => {
   it('never runs more tasks at once than its capacity', async () => {
@@ -55,5 +28,37 @@ describe('Semaphore', () => {
       'task failed',
     );
     await expect(semaphore.use(() => Promise.resolve('after'))).resolves.toBe('after');
+  });
+});
+
+describe('Semaphore.acquire with a cancellation signal', () => {
+  it('stops waiting when the signal aborts, and the cancelled waiter never takes a slot', async () => {
+    const semaphore = new Semaphore(1);
+    const holder = await semaphore.acquire();
+    const controller = new AbortController();
+
+    const waiting = semaphore.acquire(controller.signal);
+    controller.abort();
+
+    await expect(waiting).rejects.toMatchObject({ code: 'CANCELLED' });
+    holder();
+    // The slot went back to the pool instead of to the cancelled waiter.
+    const next = await Promise.race([
+      semaphore.acquire().then(() => 'acquired'),
+      new Promise((done) => {
+        setTimeout(() => {
+          done('stuck');
+        }, 50);
+      }),
+    ]);
+    expect(next).toBe('acquired');
+  });
+
+  it('refuses at once when the signal is already aborted', async () => {
+    const semaphore = new Semaphore(1);
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(semaphore.acquire(controller.signal)).rejects.toMatchObject({ code: 'CANCELLED' });
   });
 });

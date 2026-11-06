@@ -7,7 +7,9 @@ import {
   YouTubeExperimentalProvider,
   type YouTubeProviderOptions,
 } from '../../src/audio/providers/youtubeProvider.js';
+import { MusicEngine } from '../../src/music/engine/musicEngine.js';
 import { countBytes, createSineFixture, isProcessRunning } from '../helpers/ffmpeg.js';
+import { DEFAULT_SETTINGS, FakePlayer, FakeVoice } from '../helpers/fakeMusic.js';
 
 const FFMPEG = process.env.MELODY_FFMPEG_PATH ?? 'ffmpeg';
 const BYTES_PER_SECOND = 48_000 * 2 * 2;
@@ -36,6 +38,8 @@ else if (args.includes('--flat-playlist')) {
     { id: 'AAAAAAAAAAA', title: 'One', duration: 60 },
     { id: 'BBBBBBBBBBB', title: 'Two', duration: 70 },
   ] }));
+} else if (streaming && videoId.startsWith('LATE')) {
+  setTimeout(() => createReadStream(process.env.FAKE_YTDLP_AUDIO).pipe(process.stdout), 2500);
 } else if (streaming) {
   createReadStream(process.env.FAKE_YTDLP_AUDIO).pipe(process.stdout);
 } else {
@@ -272,6 +276,82 @@ describe.skipIf(process.platform === 'win32')(
       const playable = await second;
       expect(secondOpened).toBe(true);
       await playable.close();
+    });
+
+    it('stops waiting for a stream slot when the track is cancelled, and never starts yt-dlp for it', async () => {
+      const provider = providerWith({ maxConcurrency: 1 });
+      const first = await provider.getPlayableStream(trackFor('AAAAAAAAAAA'), signal());
+      const controller = new AbortController();
+
+      const waiting = provider.getPlayableStream(trackFor('CCCCCCCCCCC'), controller.signal);
+      controller.abort();
+      await expect(waiting).rejects.toMatchObject({ code: 'CANCELLED' });
+      await first.close();
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      const started = (await invocations()).filter((call) => call.args.includes('-o'));
+      expect(started.some((call) => call.args.at(-1)?.includes('CCCCCCCCCCC'))).toBe(false);
+    });
+
+    it('leaves no process behind and frees the slot when the engine gives up on a slow start', async () => {
+      const provider = providerWith({ maxConcurrency: 1, timeoutSec: 30 });
+      const engine = new MusicEngine({
+        voice: new FakeVoice(),
+        createPlayer: () => new FakePlayer(),
+        providers: (kind) => (kind === 'youtube' ? provider : undefined),
+        listeners: () => 1,
+        settings: () => DEFAULT_SETTINGS,
+        onChange: () => undefined,
+        bufferTimeoutMs: 500,
+      });
+      const late = trackFor('LATE0000001');
+      const draft = {
+        source: late.source,
+        sourceRef: late.sourceRef,
+        title: late.title,
+        artist: late.artist,
+        durationSec: late.durationSec,
+        thumbnailUrl: late.thumbnailUrl,
+        originalUrl: late.originalUrl,
+        metadata: late.metadata,
+      };
+
+      const result = await engine.enqueue({
+        guildId: 'g1',
+        voiceChannelId: 'c1',
+        requesterId: 'user-1',
+        tracks: [draft],
+      });
+      expect(result.failure).toContain('вовремя');
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+
+      const pid = (await invocations()).findLast((call) =>
+        call.args.at(-1)?.includes('LATE0000001'),
+      )?.pid;
+      expect(pid !== undefined && isProcessRunning(pid)).toBe(false);
+      const next = await provider.getPlayableStream(trackFor('AAAAAAAAAAA'), signal());
+      await next.close();
+      await engine.shutdown();
+    });
+
+    it('still looks up links while every stream slot is busy playing', async () => {
+      const provider = providerWith({ maxConcurrency: 1 });
+      const playing = await provider.getPlayableStream(trackFor('AAAAAAAAAAA'), signal());
+
+      const lookup = provider.resolve('https://www.youtube.com/watch?v=BBBBBBBBBBB', {
+        signal: signal(),
+      });
+      const outcome = await Promise.race([
+        lookup.then(() => 'resolved'),
+        new Promise((resolve) => {
+          setTimeout(() => {
+            resolve('blocked');
+          }, 3_000);
+        }),
+      ]);
+
+      expect(outcome).toBe('resolved');
+      await playing.close();
     });
   },
 );

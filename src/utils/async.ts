@@ -1,27 +1,6 @@
 import { AppError } from './errors.js';
 
 /**
- * Rejects with a TIMEOUT application error if `work` does not settle in time.
- * The timer is always cleared, so a finished operation leaves nothing behind.
- */
-export function withTimeout<T>(
-  work: Promise<T>,
-  timeoutMs: number,
-  userMessage: string,
-): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  const deadline = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => {
-      reject(new AppError('TIMEOUT', userMessage));
-    }, timeoutMs);
-  });
-
-  return Promise.race([work, deadline]).finally(() => {
-    clearTimeout(timer);
-  });
-}
-
-/**
  * Limits how many tasks run at the same time. Waiting tasks start in the order
  * they arrived. A slot is handed to the next waiter directly, so it cannot be
  * stolen by a task that arrives later.
@@ -49,10 +28,11 @@ export class Semaphore {
   /**
    * Waits for a slot and returns the function that releases it. Use this when the slot
    * must stay held beyond one call, such as while a stream plays. The release function
-   * is idempotent.
+   * is idempotent. When `signal` aborts first, the wait ends with a CANCELLED error and
+   * the cancelled caller never receives a slot.
    */
-  async acquire(): Promise<() => void> {
-    await this.waitForSlot();
+  async acquire(signal?: AbortSignal): Promise<() => void> {
+    await this.waitForSlot(signal);
     let released = false;
     return () => {
       if (!released) {
@@ -62,13 +42,28 @@ export class Semaphore {
     };
   }
 
-  private waitForSlot(): Promise<void> {
+  private waitForSlot(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted === true) {
+      return Promise.reject(new AppError('CANCELLED', 'Запрос отменён.'));
+    }
     if (this.available > 0) {
       this.available -= 1;
       return Promise.resolve();
     }
-    return new Promise<void>((resolve) => {
-      this.waiters.push(resolve);
+    return new Promise<void>((resolve, reject) => {
+      const onAbort = (): void => {
+        const index = this.waiters.indexOf(grant);
+        if (index !== -1) {
+          this.waiters.splice(index, 1);
+        }
+        reject(new AppError('CANCELLED', 'Запрос отменён.'));
+      };
+      const grant = (): void => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      this.waiters.push(grant);
     });
   }
 
