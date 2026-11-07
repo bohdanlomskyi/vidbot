@@ -4,6 +4,7 @@ import type { PlayableSource } from '../../audio/providers/types.js';
 import type { AudioProvider } from '../../audio/providers/types.js';
 import { AppError, toUserMessage } from '../../utils/errors.js';
 import { KeyedMutex } from '../../utils/keyedMutex.js';
+import { describeLengthLimit, exceedsLengthLimit } from '../lengthLimit.js';
 import type { Track, TrackDraft } from '../models/track.js';
 import type {
   AudioPlayerPort,
@@ -461,10 +462,10 @@ export class MusicEngine {
   ): Promise<{ positions: readonly number[]; loading: CurrentPlayback | null }> {
     const settings = this.options.settings(request.guildId);
     for (const draft of request.tracks) {
-      if (draft.durationSec !== null && draft.durationSec > settings.maxTrackSec) {
+      if (draft.durationSec !== null && exceedsLengthLimit(draft.durationSec, settings.maxTrackSec)) {
         throw new AppError(
           'TRACK_TOO_LONG',
-          `«${draft.title}» длиннее допустимых ${String(Math.floor(settings.maxTrackSec / 60))} мин.`,
+          `«${draft.title}» длиннее допустимого: ${describeLengthLimit(settings.maxTrackSec)}`,
         );
       }
     }

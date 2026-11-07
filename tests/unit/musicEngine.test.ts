@@ -225,6 +225,15 @@ describe('MusicEngine', () => {
       expect(harness.voice.connections).toHaveLength(0);
     });
 
+    it('plays a track of any length when the guild maximum is 0 (no limit)', async () => {
+      harness = createHarness({ maxTrackSec: 0 });
+
+      const result = await harness.engine.enqueue(request('g1', 'c1', ['Ten hours'], 36_000));
+
+      expect(result.failure).toBeNull();
+      expect(harness.engine.snapshot('g1').nowPlaying?.track.title).toBe('Ten hours');
+    });
+
     it('applies the guild default volume to a new session', async () => {
       harness = createHarness({ defaultVolume: 40 });
       await harness.engine.enqueue(request('g1', 'c1', ['Alpha']));

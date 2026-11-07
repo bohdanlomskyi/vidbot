@@ -1,3 +1,4 @@
+import { exceedsLengthLimit } from '../../music/lengthLimit.js';
 import { Transform } from 'node:stream';
 import type { Track, TrackDraft } from '../../music/models/track.js';
 import { Semaphore } from '../../utils/async.js';
@@ -117,7 +118,9 @@ export class YouTubeExperimentalProvider implements AudioProvider {
       );
       return parsePlaylistEntries(stdout, this.options.playlistMaxItems)
         .filter(
-          (entry) => entry.durationSec !== null && entry.durationSec <= this.options.maxDurationSec,
+          (entry) =>
+            entry.durationSec !== null &&
+            !exceedsLengthLimit(entry.durationSec, this.options.maxDurationSec),
         )
         .map((entry) => ({
           source: 'youtube' as const,

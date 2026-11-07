@@ -1,3 +1,4 @@
+import { isValidLengthLimit } from '../music/lengthLimit.js';
 import { z } from 'zod';
 import type { SourceKind } from '../music/models/track.js';
 import type { SqliteDatabase } from './db.js';
@@ -46,7 +47,7 @@ export const settingsPatchSchema = z
     idleTimeoutSec: z.number().int().min(10).max(3600).optional(),
     emptyTimeoutSec: z.number().int().min(10).max(600).optional(),
     queueLimit: z.number().int().min(1).max(500).optional(),
-    maxTrackSec: z.number().int().min(60).max(21_600).optional(),
+    maxTrackSec: z.number().int().refine(isValidLengthLimit).optional(),
     defaultVolume: z.number().int().min(0).max(100).optional(),
     skipVotePercent: z.number().int().min(0).max(100).optional(),
     allowedSources: z.array(z.enum(SOURCE_KINDS)).min(1).max(3).optional(),

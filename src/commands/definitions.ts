@@ -219,10 +219,10 @@ export const COMMAND_DEFINITIONS = [
         .addIntegerOption((option) =>
           option
             .setName('minutes')
-            .setDescription('От 1 до 360')
+            .setDescription('0 — без ограничения; иначе от 1 до 10080 (неделя)')
             .setRequired(true)
-            .setMinValue(1)
-            .setMaxValue(360),
+            .setMinValue(0)
+            .setMaxValue(10_080),
         ),
     )
     .addSubcommand((sub) =>

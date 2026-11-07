@@ -1,3 +1,4 @@
+import { describeLengthLimit } from '../music/lengthLimit.js';
 import {
   ActionRowBuilder,
   ButtonBuilder,
@@ -184,7 +185,7 @@ export async function handleSettings(
       break;
     case 'max-duration':
       patch({ maxTrackSec: interaction.options.getInteger('minutes', true) * 60 });
-      message = `Максимальная длительность трека: ${String(interaction.options.getInteger('minutes', true))} мин.`;
+      message = `Максимальная длительность трека: ${describeLengthLimit(interaction.options.getInteger('minutes', true) * 60)}`;
       break;
     case 'default-volume':
       patch({ defaultVolume: interaction.options.getInteger('value', true) });
@@ -316,7 +317,7 @@ function settingsEmbed(services: AppServices, guildId: string): EmbedBuilder {
     { name: 'Очередь', value: String(settings.queueLimit), inline: true },
     {
       name: 'Макс. длительность',
-      value: `${String(settings.maxTrackSec / 60)} мин.`,
+      value: describeLengthLimit(settings.maxTrackSec),
       inline: true,
     },
     { name: 'Громкость по умолчанию', value: `${String(settings.defaultVolume)} %`, inline: true },

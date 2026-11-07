@@ -1,3 +1,4 @@
+import { isValidLengthLimit, MAX_LENGTH_LIMIT_SEC } from '../music/lengthLimit.js';
 import path from 'node:path';
 import { z } from 'zod';
 import type { LogLevel } from '../utils/logger.js';
@@ -76,21 +77,21 @@ const DEFAULTS: Readonly<Record<string, string>> = {
   FFMPEG_PATH: 'ffmpeg',
   FFPROBE_PATH: 'ffprobe',
   MAX_QUEUE_SIZE: '100',
-  MAX_TRACK_DURATION_SEC: '1800',
+  MAX_TRACK_DURATION_SEC: '0',
   DEFAULT_VOLUME: '70',
   IDLE_TIMEOUT_SEC: '300',
   EMPTY_CHANNEL_TIMEOUT_SEC: '60',
   RATE_LIMIT_PER_10S: '6',
   UPLOADS_ENABLED: 'true',
-  UPLOAD_MAX_MB: '25',
-  UPLOAD_QUOTA_MB: '2000',
+  UPLOAD_MAX_MB: '500',
+  UPLOAD_QUOTA_MB: '20000',
   STREAM_PROVIDER_ENABLED: 'false',
   STREAM_CATALOG_FILE: 'config/streams.json',
-  STREAM_MAX_BYTES: '536870912',
+  STREAM_MAX_BYTES: '4294967296',
   YOUTUBE_PROVIDER_ENABLED: 'false',
   YTDLP_PATH: 'yt-dlp',
   YTDLP_JS_RUNTIME: 'node',
-  YOUTUBE_MAX_DURATION_SEC: '900',
+  YOUTUBE_MAX_DURATION_SEC: '0',
   YOUTUBE_PLAYLIST_MAX_ITEMS: '25',
   YOUTUBE_MAX_CONCURRENCY: '2',
   YOUTUBE_TIMEOUT_SEC: '30',
@@ -106,6 +107,11 @@ function integerIn(min: number, max: number) {
     .transform(Number)
     .pipe(z.number().int().min(min).max(max));
 }
+
+/** 0 means no limit; otherwise from one minute to a week. */
+const lengthLimit = integerIn(0, MAX_LENGTH_LIMIT_SEC).refine(isValidLengthLimit, {
+  message: '0 (без ограничения) или от 60 секунд',
+});
 
 const flag = z
   .enum(['true', 'false', '1', '0'], { error: 'допустимы только значения true, false, 1 или 0' })
@@ -126,7 +132,7 @@ const envSchema = z.object({
   FFMPEG_PATH: z.string().min(1),
   FFPROBE_PATH: z.string().min(1),
   MAX_QUEUE_SIZE: integerIn(1, 500),
-  MAX_TRACK_DURATION_SEC: integerIn(60, 21_600),
+  MAX_TRACK_DURATION_SEC: lengthLimit,
   DEFAULT_VOLUME: integerIn(0, 100),
   IDLE_TIMEOUT_SEC: integerIn(10, 3_600),
   EMPTY_CHANNEL_TIMEOUT_SEC: integerIn(10, 600),
@@ -140,7 +146,7 @@ const envSchema = z.object({
   YOUTUBE_PROVIDER_ENABLED: flag,
   YTDLP_PATH: z.string().min(1),
   YTDLP_JS_RUNTIME: z.enum(['node', 'deno']),
-  YOUTUBE_MAX_DURATION_SEC: integerIn(60, 3_600),
+  YOUTUBE_MAX_DURATION_SEC: lengthLimit,
   YOUTUBE_PLAYLIST_MAX_ITEMS: integerIn(0, 100),
   YOUTUBE_MAX_CONCURRENCY: integerIn(1, 4),
   YOUTUBE_TIMEOUT_SEC: integerIn(5, 120),

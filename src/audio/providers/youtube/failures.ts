@@ -1,3 +1,4 @@
+import { describeLengthLimit, exceedsLengthLimit } from '../../../music/lengthLimit.js';
 import { type AppErrorCode, AppError } from '../../../utils/errors.js';
 
 export interface ClassifiedFailure {
@@ -129,11 +130,10 @@ export function parseVideoMetadata(
   if (duration === null || duration <= 0) {
     throw new AppError('SOURCE_UNAVAILABLE', 'Не удалось определить длительность видео.');
   }
-  if (duration > options.maxDurationSec) {
-    const maxMinutes = Math.floor(options.maxDurationSec / 60);
+  if (exceedsLengthLimit(duration, options.maxDurationSec)) {
     throw new AppError(
       'TRACK_TOO_LONG',
-      `Видео слишком длинное. Максимальная длительность: ${String(maxMinutes)} мин.`,
+      `Видео слишком длинное. Максимальная длительность: ${describeLengthLimit(options.maxDurationSec)}`,
     );
   }
 
@@ -218,7 +218,7 @@ export function parseSearchResults(
       typeof duration !== 'number' ||
       !Number.isFinite(duration) ||
       duration <= 0 ||
-      duration > options.maxDurationSec ||
+      exceedsLengthLimit(duration, options.maxDurationSec) ||
       entry.is_live === true ||
       LIVE_STATES.has(String(entry.live_status))
     ) {

@@ -40,7 +40,7 @@ import { showSearch } from './search.js';
 import { actorFromMember, accessContextFor, decide } from '../discord/access.js';
 
 const RESOLVE_TIMEOUT_MS = 20_000;
-const UPLOAD_TIMEOUT_MS = 120_000;
+const UPLOAD_TIMEOUT_MS = 660_000;
 const HISTORY_SHOWN = 10;
 const VOLUME_STEP = 10;
 const LOOP_ORDER: readonly LoopMode[] = ['off', 'track', 'queue'];

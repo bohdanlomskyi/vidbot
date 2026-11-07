@@ -18,6 +18,24 @@ describe('loadConfig', () => {
     expect(config.streams.enabled).toBe(false);
   });
 
+  it('limits neither track length nor YouTube video length by default', () => {
+    const config = loadConfig(env(), CWD);
+
+    expect(config.playback.maxTrackSec).toBe(0);
+    expect(config.youtube.maxDurationSec).toBe(0);
+    // Ten hours of audio at a high bitrate fits in a stream, and long files can be uploaded.
+    expect(config.streams.maxBytes).toBeGreaterThanOrEqual(36_000 * 40_000);
+    expect(config.uploads.maxBytes).toBe(500 * 1_048_576);
+  });
+
+  it('accepts 0 or a length of at least a minute as a length limit', () => {
+    expect(loadConfig(env({ MAX_TRACK_DURATION_SEC: '36000' }), CWD).playback.maxTrackSec).toBe(
+      36_000,
+    );
+    expect(() => loadConfig(env({ MAX_TRACK_DURATION_SEC: '30' }), CWD)).toThrow(ConfigError);
+    expect(() => loadConfig(env({ YOUTUBE_MAX_DURATION_SEC: '30' }), CWD)).toThrow(ConfigError);
+  });
+
   it('uses an explicit queue limit instead of the default', () => {
     expect(loadConfig(env({ MAX_QUEUE_SIZE: '25' }), CWD).playback.maxQueueSize).toBe(25);
   });

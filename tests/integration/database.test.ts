@@ -37,6 +37,36 @@ describe('database schema and migrations', () => {
     db.close();
   });
 
+  it('lifts the old 30-minute default of existing servers and accepts 0 as no limit', () => {
+    const db = openDatabase(':memory:');
+    migrate(
+      db,
+      MIGRATIONS.filter((migration) => migration.version <= 4),
+    );
+    db.prepare(
+      "INSERT INTO guild_settings (guild_id, max_track_sec, announce_mode, stay_connected) VALUES ('1', 1800, 'important', 1), ('2', 600, 'all', 0)",
+    ).run();
+
+    migrate(db);
+    const rows = db
+      .prepare(
+        'SELECT guild_id, max_track_sec, announce_mode, stay_connected FROM guild_settings ORDER BY guild_id',
+      )
+      .all();
+    const repo = new GuildSettingsRepository(db, { ...DEFAULTS, maxTrackSec: 0 });
+    repo.patch('2', { maxTrackSec: 0 });
+
+    expect(rows).toEqual([
+      { guild_id: '1', max_track_sec: 0, announce_mode: 'important', stay_connected: 1 },
+      { guild_id: '2', max_track_sec: 600, announce_mode: 'all', stay_connected: 0 },
+    ]);
+    expect(repo.get('2').maxTrackSec).toBe(0);
+    expect(repo.get('3').maxTrackSec).toBe(0);
+    expect(() => repo.patch('2', { maxTrackSec: 30 })).toThrow();
+    expect(checkDatabase(db)).toEqual({ ok: true, detail: 'ok' });
+    db.close();
+  });
+
   it('reports a healthy database after normal use', () => {
     const db = openDatabase(':memory:');
     migrate(db);

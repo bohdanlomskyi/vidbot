@@ -88,6 +88,12 @@ describe('parseVideoMetadata', () => {
     );
   });
 
+  it('accepts a video of any length when the maximum is 0 (no limit)', () => {
+    const json = JSON.stringify({ ...normal, duration: 36_000 });
+
+    expect(parseVideoMetadata(json, { maxDurationSec: 0 }).durationSec).toBe(36_000);
+  });
+
   it('rejects a video whose duration is unknown', () => {
     const json = JSON.stringify({ ...normal, duration: null });
 

@@ -100,6 +100,12 @@ describe('parseSearchResults', () => {
     ]);
   });
 
+  it('keeps a ten-hour video when there is no length limit', () => {
+    const results = parseSearchResults(listing, { maxDurationSec: 0, limit: 5 });
+
+    expect(results.map((item) => item.id)).toContain('LONGLONGLON');
+  });
+
   it('stops at the limit', () => {
     const results = parseSearchResults(listing, { maxDurationSec: 100_000, limit: 1 });
 

@@ -90,6 +90,45 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX idx_favorites_user ON favorites (user_id, id);
     `,
   },
+  {
+    version: 5,
+    name: 'track_length_unlimited',
+    // SQLite cannot change a CHECK constraint, so the table is rebuilt. 0 now means no limit.
+    // Servers still on the old 30-minute default lose the limit; other values are kept.
+    sql: `
+      CREATE TABLE guild_settings_v5 (
+        guild_id TEXT PRIMARY KEY NOT NULL,
+        text_channel_id TEXT,
+        panel_message_id TEXT,
+        dj_role_id TEXT,
+        control_policy TEXT NOT NULL DEFAULT 'everyone' CHECK (control_policy IN ('everyone', 'dj')),
+        idle_timeout_sec INTEGER NOT NULL DEFAULT 300 CHECK (idle_timeout_sec BETWEEN 10 AND 3600),
+        empty_timeout_sec INTEGER NOT NULL DEFAULT 60 CHECK (empty_timeout_sec BETWEEN 10 AND 600),
+        queue_limit INTEGER NOT NULL DEFAULT 100 CHECK (queue_limit BETWEEN 1 AND 500),
+        max_track_sec INTEGER NOT NULL DEFAULT 0
+          CHECK (max_track_sec = 0 OR max_track_sec BETWEEN 60 AND 604800),
+        default_volume INTEGER NOT NULL DEFAULT 70 CHECK (default_volume BETWEEN 0 AND 100),
+        skip_vote_percent INTEGER NOT NULL DEFAULT 0 CHECK (skip_vote_percent BETWEEN 0 AND 100),
+        allowed_sources TEXT NOT NULL DEFAULT '["local","stream"]',
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        announce_mode TEXT NOT NULL DEFAULT 'all',
+        stay_connected INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO guild_settings_v5 (
+        guild_id, text_channel_id, panel_message_id, dj_role_id, control_policy,
+        idle_timeout_sec, empty_timeout_sec, queue_limit, max_track_sec, default_volume,
+        skip_vote_percent, allowed_sources, updated_at, announce_mode, stay_connected
+      )
+      SELECT
+        guild_id, text_channel_id, panel_message_id, dj_role_id, control_policy,
+        idle_timeout_sec, empty_timeout_sec, queue_limit,
+        CASE WHEN max_track_sec = 1800 THEN 0 ELSE max_track_sec END,
+        default_volume, skip_vote_percent, allowed_sources, updated_at, announce_mode, stay_connected
+      FROM guild_settings;
+      DROP TABLE guild_settings;
+      ALTER TABLE guild_settings_v5 RENAME TO guild_settings;
+    `,
+  },
 ];
 
 /**

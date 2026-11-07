@@ -1,6 +1,6 @@
 import { parseEnv } from 'node:util';
 import { describe, expect, it } from 'vitest';
-import { formatEnvValue, updateEnvText } from '../../../src/setup/envFile.js';
+import { formatEnvValue, liftOldLimits, updateEnvText } from '../../../src/setup/envFile.js';
 
 const EXAMPLE = [
   '# Токен бота',
@@ -65,5 +65,51 @@ describe('formatEnvValue', () => {
 
   it('refuses a value that would break the file', () => {
     expect(() => formatEnvValue('line\nbreak')).toThrow(RangeError);
+  });
+});
+
+describe('liftOldLimits', () => {
+  const old = [
+    '# Максимальная длительность одного трека в секундах (60–21600).',
+    'MAX_TRACK_DURATION_SEC=1800',
+    'YOUTUBE_MAX_DURATION_SEC=900',
+    'UPLOAD_MAX_MB=25',
+    'UPLOAD_QUOTA_MB=2000',
+    'STREAM_MAX_BYTES=536870912',
+    'DISCORD_TOKEN=keep-me',
+    '',
+  ].join('\r\n');
+
+  it('replaces the limits that still have their old shipped values, and keeps everything else', () => {
+    const { text, changed } = liftOldLimits(old);
+
+    expect(changed).toEqual([
+      'MAX_TRACK_DURATION_SEC',
+      'YOUTUBE_MAX_DURATION_SEC',
+      'UPLOAD_MAX_MB',
+      'UPLOAD_QUOTA_MB',
+      'STREAM_MAX_BYTES',
+    ]);
+    expect(text.split('\r\n')).toEqual([
+      '# Максимальная длительность одного трека в секундах: 0 — без ограничения, иначе от 60.',
+      'MAX_TRACK_DURATION_SEC=0',
+      'YOUTUBE_MAX_DURATION_SEC=0',
+      'UPLOAD_MAX_MB=500',
+      'UPLOAD_QUOTA_MB=20000',
+      'STREAM_MAX_BYTES=4294967296',
+      'DISCORD_TOKEN=keep-me',
+      '',
+    ]);
+  });
+
+  it('leaves a value the owner chose, and changes nothing a second time', () => {
+    const chosen = 'MAX_TRACK_DURATION_SEC=3600\nYOUTUBE_MAX_DURATION_SEC=900\n';
+
+    const once = liftOldLimits(chosen);
+    const twice = liftOldLimits(once.text);
+
+    expect(once.text).toBe('MAX_TRACK_DURATION_SEC=3600\nYOUTUBE_MAX_DURATION_SEC=0\n');
+    expect(twice.changed).toEqual([]);
+    expect(twice.text).toBe(once.text);
   });
 });

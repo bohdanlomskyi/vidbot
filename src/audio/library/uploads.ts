@@ -16,7 +16,8 @@ const ATTACHMENT_HOSTS: ReadonlySet<string> = new Set([
   'cdn.discordapp.com',
   'media.discordapp.net',
 ]);
-const DOWNLOAD_TIMEOUT_MS = 90_000;
+/** Large files (up to UPLOAD_MAX_MB) need time on a slow line; Discord keeps the reply open for 15 min. */
+const DOWNLOAD_TIMEOUT_MS = 600_000;
 const MAX_NAME_LENGTH = 60;
 const MAX_SAME_NAMES = 50;
 
