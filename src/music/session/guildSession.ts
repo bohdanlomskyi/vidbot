@@ -49,6 +49,8 @@ export class GuildSession {
   readonly timers = new SessionTimers();
   readonly votes = new Set<string>();
   lastNotice: string | null = null;
+  /** Which next track was opened early, and for which playback, so it happens once. */
+  preloadedFor: string | null = null;
   resumeAfterLoss: 'playing' | 'paused' | 'idle' = 'idle';
   reconnectAttempts = 0;
   private tokenCounter = 0;

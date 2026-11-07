@@ -1,4 +1,4 @@
-export type TimerKind = 'idle' | 'empty' | 'reconnect';
+export type TimerKind = 'idle' | 'empty' | 'reconnect' | 'preload';
 
 /**
  * One timer per kind per session. Scheduling a kind that is already pending does nothing,
@@ -20,6 +20,12 @@ export class SessionTimers {
       action();
     }, delayMs);
     this.timers.set(kind, timer);
+  }
+
+  /** Like ensure, but a pending timer of this kind is replaced. */
+  replace(kind: TimerKind, delayMs: number, action: () => void): void {
+    this.cancel(kind);
+    this.ensure(kind, delayMs, action);
   }
 
   cancel(kind: TimerKind): void {

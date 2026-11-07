@@ -42,5 +42,10 @@ export interface AudioProvider {
   /** Re-checks a queued track just before playback. Throws AppError when it cannot play. */
   validate(track: Track): Promise<void>;
   getPlayableStream(track: Track, signal: AbortSignal, startSec?: number): Promise<PlayableSource>;
+  /**
+   * Optional. Starts opening a track that will play soon, so the later getPlayableStream is
+   * fast. Best effort: it never throws, and a provider may decline (no free slot, disabled).
+   */
+  preload?(track: Track): void;
   dispose(): Promise<void>;
 }

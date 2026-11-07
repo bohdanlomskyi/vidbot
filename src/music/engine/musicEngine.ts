@@ -70,6 +70,8 @@ const NOTHING_PLAYING = 'Сейчас ничего не играет.';
 /** "Previous" restarts the current track when it has played longer than this. */
 const PREVIOUS_RESTART_MS = 5_000;
 const PLAYED_KEPT = 20;
+/** The next track starts opening this long before the current one ends, so there is no gap. */
+const PRELOAD_LEAD_MS = 30_000;
 
 /** What opening a source produced. Loading runs outside the guild lock. */
 type LoadOutcome =
@@ -1017,7 +1019,46 @@ export class MusicEngine {
 
   private afterChange(session: GuildSession): void {
     this.syncTimers(session);
+    this.schedulePreload(session);
     this.options.onChange(this.snapshotOf(session));
+  }
+
+  /** The track that will play after the current one, as things stand now. */
+  private upcoming(session: GuildSession, current: Track): Track | null {
+    if (session.loop === 'track') {
+      return current;
+    }
+    return session.queue.list()[0] ?? (session.loop === 'queue' ? current : null);
+  }
+
+  /**
+   * Asks the next track's provider to open it shortly before the current track ends. A network
+   * source (YouTube) can take seconds to open; opened early, the next track starts without a gap.
+   * The timer is set again on every change, so a pause, a skip or a queue edit is followed.
+   */
+  private schedulePreload(session: GuildSession): void {
+    const playback = session.current;
+    const durationSec = playback?.track.durationSec ?? null;
+    if (playback === null || !playback.started || session.state !== 'playing' || durationSec === null) {
+      session.timers.cancel('preload');
+      return;
+    }
+    const next = this.upcoming(session, playback.track);
+    const provider = next === null ? undefined : this.options.providers(next.source);
+    const key = next === null ? null : `${String(playback.token)}:${next.id}`;
+    if (next === null || provider?.preload === undefined || !provider.enabled || key === session.preloadedFor) {
+      session.timers.cancel('preload');
+      return;
+    }
+    const remainingMs = durationSec * 1000 - this.elapsedOf(playback);
+    session.timers.replace('preload', Math.max(0, remainingMs - PRELOAD_LEAD_MS), () => {
+      session.preloadedFor = key;
+      try {
+        provider.preload?.(next);
+      } catch (error) {
+        this.log.warn({ guildId: session.guildId, err: error }, 'Opening the next track early failed');
+      }
+    });
   }
 
   private elapsedOf(playback: CurrentPlayback): number {

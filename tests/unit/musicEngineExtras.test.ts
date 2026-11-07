@@ -45,6 +45,83 @@ describe('MusicEngine extras', () => {
     vi.useRealTimers();
   });
 
+  describe('opening the next track early', () => {
+    beforeEach(() => {
+      // With nobody listening the bot would leave the channel before the track ends.
+      harness.setListeners(1);
+    });
+
+    function preloaded(h: Harness): string[] {
+      return h.provider.preloaded;
+    }
+
+    it('starts opening the next track shortly before the current one ends', async () => {
+      await harness.engine.enqueue(request(['A', 'B']));
+      await startPlaying(harness);
+
+      await vi.advanceTimersByTimeAsync(169_000);
+      expect(preloaded(harness)).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(preloaded(harness)).toEqual(['B']);
+    });
+
+    it('opens the next track only once, whatever else changes', async () => {
+      await harness.engine.enqueue(request(['A', 'B']));
+      await startPlaying(harness);
+      await vi.advanceTimersByTimeAsync(185_000);
+      await harness.engine.setVolume('g1', 50);
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(preloaded(harness)).toEqual(['B']);
+    });
+
+    it('waits while the track is paused', async () => {
+      await harness.engine.enqueue(request(['A', 'B']));
+      await startPlaying(harness);
+      await harness.engine.pause('g1');
+
+      await vi.advanceTimersByTimeAsync(400_000);
+
+      expect(preloaded(harness)).toEqual([]);
+    });
+
+    it('follows a change of the queue', async () => {
+      await harness.engine.enqueue(request(['A', 'B']));
+      await startPlaying(harness);
+      await harness.engine.enqueue(request(['X'], { playNext: true }));
+
+      await vi.advanceTimersByTimeAsync(171_000);
+
+      expect(preloaded(harness)).toEqual(['X']);
+    });
+
+    it('opens the same track again when it repeats', async () => {
+      await harness.engine.enqueue(request(['A']));
+      await startPlaying(harness);
+      await harness.engine.setLoop('g1', 'track');
+
+      await vi.advanceTimersByTimeAsync(171_000);
+
+      expect(preloaded(harness)).toEqual(['A']);
+    });
+
+    it('does nothing for a live stream or when nothing follows', async () => {
+      await harness.engine.enqueue({ ...request([]), tracks: [draft('Live', null), draft('B')] });
+      await startPlaying(harness);
+      await vi.advanceTimersByTimeAsync(4_000_000);
+      expect(preloaded(harness)).toEqual([]);
+
+      const single = createHarness();
+      single.setListeners(1);
+      await single.engine.enqueue(request(['Only']));
+      single.players[0]?.emitStart();
+      await flush();
+      await vi.advanceTimersByTimeAsync(400_000);
+      expect(single.provider.preloaded).toEqual([]);
+      await single.engine.shutdown();
+    });
+  });
+
   describe('track_started announcements', () => {
     it('marks the start a command waits for, and not the tracks that follow on their own', async () => {
       await harness.engine.enqueue(request(['A', 'B']));

@@ -169,6 +169,12 @@ export class FakeProvider implements AudioProvider {
   readonly gates = new Map<string, PromiseWithResolvers<undefined>>();
   /** The abort signal of every open attempt, by title. */
   readonly signals = new Map<string, AbortSignal>();
+  /** Titles the engine asked to open early, in order. */
+  readonly preloaded: string[] = [];
+
+  preload(track: Track): void {
+    this.preloaded.push(track.title);
+  }
 
   /** Makes the next open of `title` wait until the returned function is called. */
   hold(title: string): () => void {

@@ -471,6 +471,69 @@ describe.skipIf(process.platform === 'win32')(
       });
     });
 
+    describe('opening the next track early', () => {
+      async function runsFor(id: string): Promise<Invocation[]> {
+        return (await invocations()).filter((run) => run.args.at(-1)?.endsWith(id) === true);
+      }
+
+      it('plays a preloaded track from the process it already started', async () => {
+        const provider = providerWith();
+        const id = 'PRELOADED01';
+
+        provider.preload(trackFor(id));
+        await vi.waitFor(async () => {
+          expect(await runsFor(id)).toHaveLength(1);
+        });
+        const playable = await provider.getPlayableStream(trackFor(id), signal());
+        const bytes = await countBytes(playable.stream);
+        const end = await playable.ended;
+
+        expect(end.status).toBe('completed');
+        expect(bytes).toBeGreaterThan(BYTES_PER_SECOND);
+        const runs = await runsFor(id);
+        expect(runs).toHaveLength(1);
+        expect(runs[0]?.args).not.toContain('--print');
+      });
+
+      it('declines without waiting when every stream slot is busy', async () => {
+        const provider = providerWith({ maxConcurrency: 1 });
+        const playing = await provider.getPlayableStream(trackFor('AAAAAAAAAAA'), signal());
+        const id = 'NOSLOTPRE01';
+
+        provider.preload(trackFor(id));
+        await new Promise((resolve) => setTimeout(resolve, 100));
+
+        expect(await runsFor(id)).toHaveLength(0);
+        await playing.close();
+      });
+
+      it('starts one process for repeated requests and frees the slot when it is not used', async () => {
+        const provider = providerWith({ maxConcurrency: 1, preparedTtlMs: 200 });
+        const id = 'PRELOADTTL1';
+
+        provider.preload(trackFor(id));
+        provider.preload(trackFor(id));
+        await vi.waitFor(async () => {
+          expect(await runsFor(id)).toHaveLength(1);
+        });
+        const [run] = await runsFor(id);
+        await vi.waitFor(() => {
+          expect(isProcessRunning(run?.pid ?? 0)).toBe(false);
+        });
+        const slot = await provider.getPlayableStream(trackFor('AAAAAAAAAAA'), signal());
+        await slot.close();
+      });
+
+      it('does nothing when the provider is disabled', async () => {
+        const id = 'DISABLEDPR1';
+
+        providerWith({ enabled: false }).preload(trackFor(id));
+        await new Promise((resolve) => setTimeout(resolve, 100));
+
+        expect(await runsFor(id)).toHaveLength(0);
+      });
+    });
+
     describe('search', () => {
       it('returns playable results with channel and thumbnail and skips live streams', async () => {
         const results = await providerWith().search('some song', 5, signal());

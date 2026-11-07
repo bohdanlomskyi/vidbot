@@ -217,6 +217,28 @@ export class YouTubeExperimentalProvider implements AudioProvider {
     }
   }
 
+  /**
+   * Starts the audio of a track that will play soon, so the switch to it has no gap. It uses a
+   * free stream slot only; with none free, or with the provider off, it does nothing. An unused
+   * stream is closed after a while and its slot freed.
+   */
+  preload(track: Track): void {
+    if (!this.enabled || this.prepared.has(track.sourceRef) || this.breaker.isOpen(this.now())) {
+      return;
+    }
+    let url: string;
+    try {
+      url = this.canonicalFor(track);
+    } catch {
+      return;
+    }
+    const release = this.streamSlots.tryAcquire();
+    if (release === null) {
+      return;
+    }
+    this.keepPrepared(track.sourceRef, this.openProcess(url, release, false), track);
+  }
+
   async dispose(): Promise<void> {
     await Promise.all([...this.prepared.keys()].map((id) => this.dropPrepared(id)));
   }
