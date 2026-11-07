@@ -6,6 +6,8 @@ export type AccessAction =
   | 'resume'
   | 'skip'
   | 'restart'
+  | 'previous'
+  | 'skipto'
   | 'shuffle'
   | 'loop'
   | 'volume'
@@ -98,6 +100,7 @@ export function evaluateAccess(
     }
 
     case 'clear':
+    case 'skipto':
     case 'stop':
     case 'leave': {
       if (!actor.inBotChannel) {
@@ -113,6 +116,7 @@ export function evaluateAccess(
     case 'resume':
     case 'skip':
     case 'restart':
+    case 'previous':
     case 'shuffle':
     case 'loop':
     case 'volume': {

@@ -3,22 +3,23 @@ import { formatDuration } from '../utils/format.js';
 import { deferEphemeral, type AppServices } from './context.js';
 
 const HELP_LINES: readonly string[] = [
-  '**Воспроизведение**',
-  '`/play` — добавить трек: название, ссылка YouTube или идентификатор из каталога',
-  '`/pause` · `/resume` · `/skip` — пауза, продолжение, пропуск',
-  '`/queue` · `/nowplaying` — очередь и текущий трек',
-  '`/remove` · `/clear` · `/shuffle` — правка очереди',
-  '`/loop` · `/volume` — повтор и громкость',
-  '`/history` · `/replay` — недавние треки и повтор последнего',
-  '`/playlist` — плейлист YouTube с подтверждением',
+  '**Как включить музыку**',
+  '`/play` — название (бот найдёт на YouTube и предложит 5 вариантов), ссылка YouTube или трек из библиотеки',
+  '`/play file:` — **свой файл**: перетащите mp3, wav, flac, ogg или m4a в поле «file»',
+  '`/search` — поиск на YouTube с выбором из 5 · `/play next:True` — поставить следующим',
+  '',
+  '**Управление** (то же есть кнопками под плеером)',
+  '`/pause` · `/resume` · `/skip` · `/previous` · `/skipto`',
+  '`/queue` · `/nowplaying` (перенести плеер в этот чат)',
+  '`/remove` · `/clear` · `/shuffle` · `/loop` · `/volume`',
+  '`/history` · `/replay` · `/playlist` (плейлист YouTube)',
+  '`/favorites` — ваше избранное: ⭐ на плеере сохраняет трек',
   '',
   '**Голосовой канал**',
-  '`/join` — подключить бота к вашему каналу',
-  '`/move` — переместить бота (DJ или администратор)',
-  '`/stop` · `/leave` — остановить и отключить бота',
+  '`/join` · `/move` (DJ) · `/stop` · `/leave`',
   '',
   '**Администрирование**',
-  '`/setup` — выбрать канал панели · `/settings` — настройки',
+  '`/setup` — закрепить канал плеера · `/settings` — настройки, сообщения бота (`announce`), режим 24/7 (`stay-247`)',
 ];
 
 export async function handleHelp(
@@ -30,7 +31,7 @@ export async function handleHelp(
     .setTitle(`🎵 ${services.config.botName}: команды`)
     .setDescription(HELP_LINES.join('\n'))
     .setFooter({
-      text: 'Все команды отвечают только вам. Панель управления обновляется для всех.',
+      text: 'Бот пишет в чат о своих действиях. Сообщения об ошибках видны только вам.',
     });
   await interaction.editReply({ embeds: [embed], allowedMentions: { parse: [] } });
 }

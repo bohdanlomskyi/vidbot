@@ -221,6 +221,7 @@ export const DEFAULT_SETTINGS: GuildPlaybackSettings = {
   emptyTimeoutSec: 60,
   defaultVolume: 70,
   skipVotePercent: 0,
+  stayConnected: false,
 };
 
 const silentLogger = {

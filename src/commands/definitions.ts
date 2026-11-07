@@ -8,25 +8,57 @@ import { ChannelType, PermissionFlagsBits, SlashCommandBuilder } from 'discord.j
 export const COMMAND_DEFINITIONS = [
   new SlashCommandBuilder()
     .setName('play')
-    .setDescription('Добавить трек в очередь или начать воспроизведение')
+    .setDescription('Включить трек: название, ссылка YouTube или свой аудиофайл')
     .addStringOption((option) =>
       option
         .setName('source')
-        .setDescription('Название трека, идентификатор из каталога или ссылка YouTube')
-        .setRequired(true)
+        .setDescription('Название (поиск на YouTube), ссылка YouTube или трек из библиотеки')
+        .setRequired(false)
         .setAutocomplete(true)
         .setMaxLength(500),
+    )
+    .addAttachmentOption((option) =>
+      option
+        .setName('file')
+        .setDescription('Свой аудиофайл: mp3, wav, flac, ogg, m4a. Перетащите его сюда')
+        .setRequired(false),
+    )
+    .addBooleanOption((option) =>
+      option
+        .setName('next')
+        .setDescription('Поставить следующим, перед остальной очередью')
+        .setRequired(false),
+    ),
+  new SlashCommandBuilder()
+    .setName('search')
+    .setDescription('Найти на YouTube и выбрать из 5 вариантов')
+    .addStringOption((option) =>
+      option.setName('query').setDescription('Что искать').setRequired(true).setMaxLength(200),
     ),
   new SlashCommandBuilder().setName('pause').setDescription('Поставить воспроизведение на паузу'),
   new SlashCommandBuilder().setName('resume').setDescription('Продолжить воспроизведение'),
   new SlashCommandBuilder().setName('skip').setDescription('Пропустить текущий трек'),
+  new SlashCommandBuilder()
+    .setName('previous')
+    .setDescription('Вернуться к предыдущему треку (или начать текущий сначала)'),
+  new SlashCommandBuilder()
+    .setName('skipto')
+    .setDescription('Перейти к треку очереди, пропустив всё до него')
+    .addIntegerOption((option) =>
+      option
+        .setName('position')
+        .setDescription('Номер трека в очереди')
+        .setRequired(true)
+        .setMinValue(1)
+        .setMaxValue(500),
+    ),
   new SlashCommandBuilder()
     .setName('stop')
     .setDescription('Остановить воспроизведение, очистить очередь и отключиться'),
   new SlashCommandBuilder().setName('queue').setDescription('Показать очередь воспроизведения'),
   new SlashCommandBuilder()
     .setName('nowplaying')
-    .setDescription('Показать текущий трек и панель управления'),
+    .setDescription('Перенести панель плеера в этот чат'),
   new SlashCommandBuilder()
     .setName('remove')
     .setDescription('Удалить трек из очереди по номеру')
@@ -94,6 +126,39 @@ export const COMMAND_DEFINITIONS = [
         .setDescription('Ссылка на плейлист YouTube')
         .setRequired(true)
         .setMaxLength(500),
+    ),
+  new SlashCommandBuilder()
+    .setName('favorites')
+    .setDescription('Ваше избранное: сохранять треки и включать их')
+    .addSubcommand((sub) =>
+      sub.setName('add').setDescription('Добавить в избранное трек, который играет сейчас'),
+    )
+    .addSubcommand((sub) => sub.setName('list').setDescription('Показать ваше избранное'))
+    .addSubcommand((sub) =>
+      sub
+        .setName('play')
+        .setDescription('Включить избранное: всё или один трек по номеру')
+        .addIntegerOption((option) =>
+          option
+            .setName('number')
+            .setDescription('Номер в списке; без номера добавится всё избранное')
+            .setRequired(false)
+            .setMinValue(1)
+            .setMaxValue(200),
+        ),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('remove')
+        .setDescription('Убрать трек из избранного')
+        .addIntegerOption((option) =>
+          option
+            .setName('number')
+            .setDescription('Номер в списке')
+            .setRequired(true)
+            .setMinValue(1)
+            .setMaxValue(200),
+        ),
     ),
   new SlashCommandBuilder().setName('help').setDescription('Список команд и краткая инструкция'),
   new SlashCommandBuilder()
@@ -207,6 +272,30 @@ export const COMMAND_DEFINITIONS = [
             .setRequired(true)
             .setMinValue(0)
             .setMaxValue(100),
+        ),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('announce')
+        .setDescription('Какие действия бот пишет в чат')
+        .addStringOption((option) =>
+          option
+            .setName('mode')
+            .setDescription('Что показывать')
+            .setRequired(true)
+            .addChoices(
+              { name: 'Всё: каждое действие и событие', value: 'all' },
+              { name: 'Только важное: треки, отключения, ошибки', value: 'important' },
+              { name: 'Ничего (панель останется)', value: 'off' },
+            ),
+        ),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('stay-247')
+        .setDescription('Режим 24/7: не покидать голосовой канал при простое и пустоте')
+        .addBooleanOption((option) =>
+          option.setName('enabled').setDescription('Включить режим').setRequired(true),
         ),
     )
     .addSubcommand((sub) =>

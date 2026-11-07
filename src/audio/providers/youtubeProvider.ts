@@ -6,6 +6,7 @@ import { startPcmDecoder } from '../pipeline/ffmpeg.js';
 import {
   buildMetadataArgs,
   buildPlaylistArgs,
+  buildSearchArgs,
   buildStreamArgs,
   type YtDlpBaseOptions,
 } from './youtube/args.js';
@@ -13,7 +14,10 @@ import { FailureBreaker } from './youtube/breaker.js';
 import {
   classifyYtDlpFailure,
   parsePlaylistEntries,
+  parseSearchResults,
   parseVideoMetadata,
+  type SearchResult,
+  type VideoMetadata,
 } from './youtube/failures.js';
 import {
   type ProcessExit,
@@ -21,7 +25,7 @@ import {
   spawnStreamingProcess,
   type StreamingProcess,
 } from './youtube/process.js';
-import { parseYouTubeInput } from './youtube/url.js';
+import { parseYouTubeInput, type YouTubeLink } from './youtube/url.js';
 import type { AudioProvider, PlaybackEnd, PlayableSource, ResolveContext } from './types.js';
 
 export interface YouTubeProviderOptions {
@@ -39,8 +43,17 @@ export interface YouTubeProviderOptions {
   readonly timeoutSec: number;
   readonly breakerThreshold?: number;
   readonly breakerCooldownMs?: number;
+  /** How long a stream opened during resolve waits for the player. Defaults to 45 seconds. */
+  readonly preparedTtlMs?: number;
   readonly now?: () => number;
 }
+
+/** How long a stream opened during resolve waits for the player before it is closed. */
+const PREPARED_TTL_MS = 45_000;
+const SEARCH_CACHE_TTL_MS = 300_000;
+const SEARCH_CACHE_MAX = 50;
+/** Asked for in addition to the wanted count, because unplayable entries are filtered out. */
+const SEARCH_EXTRA = 3;
 
 const DISABLED_MESSAGE = 'Источник YouTube отключён оператором бота.';
 const UNAVAILABLE_MESSAGE = 'YouTube сейчас недоступен. Попробуйте позже.';
@@ -63,6 +76,12 @@ export class YouTubeExperimentalProvider implements AudioProvider {
   private readonly base: YtDlpBaseOptions;
   private readonly timeoutMs: number;
   private readonly now: () => number;
+  /** Streams already opened while their link was resolved, by video id. They hold a stream slot. */
+  private readonly prepared = new Map<string, PreparedStream>();
+  private readonly searchCache = new Map<
+    string,
+    { readonly at: number; readonly results: SearchResult[] }
+  >();
 
   constructor(private readonly options: YouTubeProviderOptions) {
     this.enabled = options.enabled;
@@ -112,23 +131,59 @@ export class YouTubeExperimentalProvider implements AudioProvider {
         }));
     }
 
+    if (context.willPlayNow === true) {
+      // One yt-dlp run gives the metadata now and keeps the audio ready for the player.
+      const draft = await this.prepare(link, context.signal);
+      if (draft !== null) {
+        return [draft];
+      }
+    }
+
     const stdout = await this.runMetadata(
       buildMetadataArgs(link.canonicalUrl, this.base),
       context.signal,
     );
-    const metadata = parseVideoMetadata(stdout, { maxDurationSec: this.options.maxDurationSec });
     return [
-      {
-        source: 'youtube',
-        sourceRef: link.id,
-        title: metadata.title,
-        artist: metadata.artist,
-        durationSec: metadata.durationSec,
-        thumbnailUrl: metadata.thumbnailUrl,
-        originalUrl: link.canonicalUrl,
-        metadata: {},
-      },
+      toVideoDraft(
+        link,
+        parseVideoMetadata(stdout, { maxDurationSec: this.options.maxDurationSec }),
+      ),
     ];
+  }
+
+  /**
+   * Finds videos by text. Results are cached for a few minutes. Live streams and videos that
+   * are too long are left out, so every result can be played.
+   */
+  async search(query: string, limit: number, signal: AbortSignal): Promise<SearchResult[]> {
+    this.assertAvailable();
+    const key = `${String(limit)}:${query.trim().toLowerCase()}`;
+    const cached = this.searchCache.get(key);
+    if (cached !== undefined && this.now() - cached.at < SEARCH_CACHE_TTL_MS) {
+      return cached.results;
+    }
+
+    let args: string[];
+    try {
+      args = buildSearchArgs(query, Math.min(10, limit + SEARCH_EXTRA), this.base);
+    } catch (error) {
+      throw new AppError('INVALID_INPUT', 'Введите запрос длиной до 200 символов.', {
+        cause: error,
+      });
+    }
+    const stdout = await this.runMetadata(args, signal);
+    const results = parseSearchResults(stdout, {
+      maxDurationSec: this.options.maxDurationSec,
+      limit,
+    });
+    if (this.searchCache.size >= SEARCH_CACHE_MAX) {
+      const oldest = this.searchCache.keys().next().value;
+      if (oldest !== undefined) {
+        this.searchCache.delete(oldest);
+      }
+    }
+    this.searchCache.set(key, { at: this.now(), results });
+    return results;
   }
 
   validate(track: Track): Promise<void> {
@@ -146,33 +201,122 @@ export class YouTubeExperimentalProvider implements AudioProvider {
       throw new AppError('CANCELLED', 'Воспроизведение отменено.');
     }
 
-    // The slot is held for the whole playback. Waiting for it ends when the track is cancelled.
-    const release = await this.streamSlots.acquire(signal);
-    let child: StreamingProcess | undefined;
+    // A stream opened while the link was resolved already holds its slot and may have audio waiting.
+    let opened = this.takePrepared(track.sourceRef);
+    if (opened === null) {
+      // The slot is held for the whole playback. Waiting for it ends when the track is cancelled.
+      const release = await this.streamSlots.acquire(signal);
+      opened = this.openProcess(url, release, false);
+    }
     try {
-      child = spawnStreamingProcess(this.options.ytdlpPath, buildStreamArgs(url, this.base));
-      let onFirstChunk: () => void = () => undefined;
-      const firstBytes = new Promise<void>((resolve) => {
-        onFirstChunk = resolve;
-      });
-      const probe = createProbe(() => {
-        onFirstChunk();
-      });
-      child.stdout.pipe(probe);
-
-      await this.awaitFirstBytes(child, firstBytes, signal);
-      return this.startPlayback(child, probe, release, signal);
+      await this.awaitStart(opened.child, opened.firstBytes, signal);
+      return this.startPlayback(opened.child, opened.probe, opened.release, signal);
     } catch (error) {
-      release();
-      if (child !== undefined) {
-        await child.stop();
-      }
+      await this.discard(opened);
       throw error;
     }
   }
 
-  dispose(): Promise<void> {
-    return Promise.resolve();
+  async dispose(): Promise<void> {
+    await Promise.all([...this.prepared.keys()].map((id) => this.dropPrepared(id)));
+  }
+
+  /** Starts yt-dlp for one video: audio on standard output, one metadata line on standard error. */
+  private openProcess(url: string, release: () => void, printMetadata: boolean): OpenedStream {
+    const metadata = Promise.withResolvers<string>();
+    const child = spawnStreamingProcess(
+      this.options.ytdlpPath,
+      buildStreamArgs(url, this.base, { printMetadata }),
+      {
+        onStderrLine: (line) => {
+          if (line.startsWith('{') && line.endsWith('}')) {
+            metadata.resolve(line);
+          }
+        },
+      },
+    );
+    const firstBytes = Promise.withResolvers<undefined>();
+    const probe = createProbe(() => {
+      firstBytes.resolve(undefined);
+    });
+    child.stdout.pipe(probe);
+    return {
+      child,
+      probe,
+      release,
+      firstBytes: firstBytes.promise,
+      metadataLine: metadata.promise,
+    };
+  }
+
+  /** Stops a stream that will not be played and frees its slot. */
+  private async discard(opened: OpenedStream): Promise<void> {
+    opened.release();
+    await opened.child.stop();
+    opened.probe.destroy();
+  }
+
+  /**
+   * Opens the audio together with the lookup. Returns null when no stream slot is free right
+   * now; the caller then looks the video up the usual way, so a busy bot never waits here.
+   */
+  private async prepare(link: YouTubeLink, signal: AbortSignal): Promise<TrackDraft | null> {
+    const existing = this.prepared.get(link.id);
+    if (existing !== undefined) {
+      return existing.draft;
+    }
+    const release = this.streamSlots.tryAcquire();
+    if (release === null) {
+      return null;
+    }
+    const opened = this.openProcess(link.canonicalUrl, release, true);
+    try {
+      const line = await this.awaitStart(opened.child, opened.metadataLine, signal);
+      const draft = toVideoDraft(
+        link,
+        parseVideoMetadata(line, { maxDurationSec: this.options.maxDurationSec }),
+      );
+      this.breaker.recordSuccess();
+      this.keepPrepared(link.id, opened, draft);
+      return draft;
+    } catch (error) {
+      await this.discard(opened);
+      throw error;
+    }
+  }
+
+  private keepPrepared(id: string, opened: OpenedStream, draft: TrackDraft): void {
+    const timer = setTimeout(() => {
+      void this.dropPrepared(id);
+    }, this.options.preparedTtlMs ?? PREPARED_TTL_MS);
+    timer.unref();
+    this.prepared.set(id, { opened, draft, timer });
+    // A process that dies while it waits is of no use to the player.
+    void opened.child.exit.then((exit) => {
+      if (
+        this.prepared.get(id)?.opened === opened &&
+        (exit.code !== 0 || exit.spawnError !== null)
+      ) {
+        void this.dropPrepared(id);
+      }
+    });
+  }
+
+  private takePrepared(id: string): OpenedStream | null {
+    const entry = this.prepared.get(id);
+    if (entry === undefined) {
+      return null;
+    }
+    clearTimeout(entry.timer);
+    this.prepared.delete(id);
+    return entry.opened;
+  }
+
+  private async dropPrepared(id: string): Promise<void> {
+    const opened = this.takePrepared(id);
+    if (opened !== null) {
+      await this.discard(opened);
+    }
   }
 
   private startPlayback(
@@ -226,14 +370,18 @@ export class YouTubeExperimentalProvider implements AudioProvider {
     return { stream: decoder.stream, ended, close };
   }
 
-  /** Waits until audio actually flows, so a bad link fails before the track is shown as playing. */
-  private async awaitFirstBytes(
+  /**
+   * Waits until the process has produced `ready` (the first audio, or the metadata line). A bad
+   * link fails here, before the track is shown as playing. The process is stopped on timeout
+   * and on cancellation; a process that exits first is classified from its error output.
+   */
+  private async awaitStart<T>(
     child: StreamingProcess,
-    firstBytes: Promise<void>,
+    ready: Promise<T>,
     signal: AbortSignal,
-  ): Promise<void> {
+  ): Promise<T> {
     type Outcome =
-      | { readonly kind: 'data' }
+      | { readonly kind: 'ready'; readonly value: T }
       | { readonly kind: 'exit'; readonly exit: ProcessExit }
       | { readonly kind: 'timeout' }
       | { readonly kind: 'aborted' };
@@ -241,7 +389,7 @@ export class YouTubeExperimentalProvider implements AudioProvider {
     let timer: NodeJS.Timeout | undefined;
     let onAbort: () => void = () => undefined;
     const outcome = await Promise.race<Outcome>([
-      firstBytes.then((): Outcome => ({ kind: 'data' })),
+      ready.then((value): Outcome => ({ kind: 'ready', value })),
       child.exit.then((exit): Outcome => ({ kind: 'exit', exit })),
       new Promise<Outcome>((resolve) => {
         timer = setTimeout(() => {
@@ -260,8 +408,8 @@ export class YouTubeExperimentalProvider implements AudioProvider {
     });
 
     switch (outcome.kind) {
-      case 'data':
-        return;
+      case 'ready':
+        return outcome.value;
       case 'aborted':
         await child.stop();
         throw new AppError('CANCELLED', 'Воспроизведение отменено.');
@@ -340,6 +488,49 @@ export class YouTubeExperimentalProvider implements AudioProvider {
   private recordSystemFailure(): void {
     this.breaker.recordSystemFailure(this.now());
   }
+}
+
+interface OpenedStream {
+  readonly child: StreamingProcess;
+  /** Passes the audio on and reports the first chunk. */
+  readonly probe: Transform;
+  readonly release: () => void;
+  readonly firstBytes: Promise<undefined>;
+  /** The JSON line yt-dlp printed to standard error, when metadata was requested. */
+  readonly metadataLine: Promise<string>;
+}
+
+interface PreparedStream {
+  readonly opened: OpenedStream;
+  readonly draft: TrackDraft;
+  readonly timer: NodeJS.Timeout;
+}
+
+function toVideoDraft(link: YouTubeLink, metadata: VideoMetadata): TrackDraft {
+  return {
+    source: 'youtube',
+    sourceRef: link.id,
+    title: metadata.title,
+    artist: metadata.artist,
+    durationSec: metadata.durationSec,
+    thumbnailUrl: metadata.thumbnailUrl,
+    originalUrl: link.canonicalUrl,
+    metadata: {},
+  };
+}
+
+/** A search result as a queueable track. The metadata is already known, so no lookup follows. */
+export function searchResultToDraft(result: SearchResult): TrackDraft {
+  return {
+    source: 'youtube',
+    sourceRef: result.id,
+    title: result.title,
+    artist: result.channel,
+    durationSec: result.durationSec,
+    thumbnailUrl: result.thumbnailUrl,
+    originalUrl: `https://www.youtube.com/watch?v=${result.id}`,
+    metadata: {},
+  };
 }
 
 /** A pass-through stream that reports its first chunk, so the caller knows audio is flowing. */

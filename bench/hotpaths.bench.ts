@@ -123,6 +123,7 @@ async function lockBench(loadMs: number): Promise<void> {
       emptyTimeoutSec: 60,
       defaultVolume: 70,
       skipVotePercent: 0,
+      stayConnected: false,
     }),
     onChange: () => undefined,
   });

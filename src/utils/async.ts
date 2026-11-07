@@ -42,6 +42,21 @@ export class Semaphore {
     };
   }
 
+  /** Takes a slot only when one is free right now. Returns its release function, or null. */
+  tryAcquire(): (() => void) | null {
+    if (this.available === 0 || this.waiters.length > 0) {
+      return null;
+    }
+    this.available -= 1;
+    let released = false;
+    return () => {
+      if (!released) {
+        released = true;
+        this.release();
+      }
+    };
+  }
+
   private waitForSlot(signal?: AbortSignal): Promise<void> {
     if (signal?.aborted === true) {
       return Promise.reject(new AppError('CANCELLED', 'Запрос отменён.'));

@@ -3,6 +3,8 @@ import type { SourceKind } from '../music/models/track.js';
 import type { SqliteDatabase } from './db.js';
 
 export type ControlPolicy = 'everyone' | 'dj';
+/** Which actions the bot writes about in the chat: everything, only important events, or nothing. */
+export type AnnounceMode = 'all' | 'important' | 'off';
 
 const SOURCE_KINDS = ['local', 'stream', 'youtube'] as const;
 const snowflake = z.string().regex(/^\d{17,20}$/, 'must be a Discord snowflake');
@@ -30,6 +32,9 @@ export interface GuildSettings {
   readonly defaultVolume: number;
   readonly skipVotePercent: number;
   readonly allowedSources: readonly SourceKind[];
+  readonly announceMode: AnnounceMode;
+  /** 24/7 mode: the bot stays in its voice channel instead of leaving when idle or alone. */
+  readonly stayConnected: boolean;
 }
 
 /** Only the fields a command may change. Unknown keys are rejected. */
@@ -45,6 +50,8 @@ export const settingsPatchSchema = z
     defaultVolume: z.number().int().min(0).max(100).optional(),
     skipVotePercent: z.number().int().min(0).max(100).optional(),
     allowedSources: z.array(z.enum(SOURCE_KINDS)).min(1).max(3).optional(),
+    announceMode: z.enum(['all', 'important', 'off']).optional(),
+    stayConnected: z.boolean().optional(),
   })
   .strict();
 
@@ -61,6 +68,8 @@ const COLUMN_BY_FIELD: Readonly<Record<keyof GuildSettingsPatch, string>> = {
   defaultVolume: 'default_volume',
   skipVotePercent: 'skip_vote_percent',
   allowedSources: 'allowed_sources',
+  announceMode: 'announce_mode',
+  stayConnected: 'stay_connected',
 };
 
 const sourceListSchema = z.array(z.enum(SOURCE_KINDS));
@@ -78,6 +87,8 @@ interface SettingsRow {
   readonly default_volume: number;
   readonly skip_vote_percent: number;
   readonly allowed_sources: string;
+  readonly announce_mode: string;
+  readonly stay_connected: number;
 }
 
 /**
@@ -127,7 +138,7 @@ export class GuildSettingsRepository {
         continue;
       }
       assignments.push(`${COLUMN_BY_FIELD[field]} = ?`);
-      params.push(field === 'allowedSources' ? JSON.stringify(value) : value);
+      params.push(encodeValue(field, value));
     }
     if (assignments.length > 0) {
       assignments.push('updated_at = CURRENT_TIMESTAMP');
@@ -172,8 +183,20 @@ export class GuildSettingsRepository {
       skipVotePercent: row.skip_vote_percent,
       // A corrupt value falls back to the configured defaults instead of failing the command.
       allowedSources: parsed.success ? parsed.data : this.defaults.allowedSources,
+      announceMode:
+        row.announce_mode === 'important' || row.announce_mode === 'off'
+          ? row.announce_mode
+          : 'all',
+      stayConnected: row.stay_connected === 1,
     };
   }
+}
+
+function encodeValue(field: keyof GuildSettingsPatch, value: unknown): unknown {
+  if (field === 'allowedSources') {
+    return JSON.stringify(value);
+  }
+  return typeof value === 'boolean' ? Number(value) : value;
 }
 
 function parseJson(text: string): unknown {

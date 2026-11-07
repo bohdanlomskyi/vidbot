@@ -39,3 +39,8 @@ export function progressBar(ratio: number, width = 12): string {
   const filled = Math.round(clamped * width);
   return '▰'.repeat(filled) + '▱'.repeat(width - filled);
 }
+
+/** A title that is safe to put inside a chat message: shortened, with Discord markdown escaped. */
+export function chatTitle(title: string, maxLength = 80): string {
+  return escapeMarkdown(truncate(title, maxLength));
+}

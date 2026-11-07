@@ -42,4 +42,15 @@ describe('describeEnqueue', () => {
       }),
     ).toBe('Добавлено треков: 3. «Alpha» не удалось воспроизвести: файл недоступен.');
   });
+
+  it('escapes markdown in a title so a link cannot be smuggled into the chat', () => {
+    const text = describeEnqueue(['[click](https://evil.example) *x*'], {
+      positions: [1],
+      startedNow: true,
+      failure: null,
+    });
+
+    expect(text).toContain('\\[click\\](https://evil.example) \\*x\\*');
+    expect(text).not.toContain('[click](');
+  });
 });

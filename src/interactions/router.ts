@@ -12,6 +12,7 @@ import {
   handleSourcesSelect,
 } from '../commands/admin.js';
 import type { AppServices } from '../commands/context.js';
+import { handleFavorites } from '../commands/favorites.js';
 import { handleHelp, handleStatus } from '../commands/info.js';
 import {
   handlePanelButton,
@@ -19,6 +20,7 @@ import {
   handleQueuePage,
   PLAYBACK_COMMANDS,
 } from '../commands/playback.js';
+import { handleSearchButton, handleSearchCommand } from '../commands/search.js';
 import { parseCustomId } from '../security/customIds.js';
 import { AppError, isAppError, toUserMessage } from '../utils/errors.js';
 import { formatDuration, truncate } from '../utils/format.js';
@@ -96,6 +98,12 @@ async function dispatchCommand(
     case 'help':
       await handleHelp(interaction, services);
       return;
+    case 'search':
+      await handleSearchCommand(interaction, services);
+      return;
+    case 'favorites':
+      await handleFavorites(interaction, services);
+      return;
     case 'status':
       await handleStatus(interaction, services);
       return;
@@ -135,6 +143,17 @@ async function dispatchButton(
         return;
       }
       break;
+    case 'search': {
+      const [token, index] = parsed.args;
+      if (token !== undefined && (parsed.action === 'pick' || parsed.action === 'cancel')) {
+        const position = Number(index ?? '0');
+        if (Number.isInteger(position)) {
+          await handleSearchButton(interaction, services, parsed.action, token, position);
+          return;
+        }
+      }
+      break;
+    }
     case 'playlist': {
       const token = parsed.args[0];
       if ((parsed.action === 'confirm' || parsed.action === 'cancel') && token !== undefined) {

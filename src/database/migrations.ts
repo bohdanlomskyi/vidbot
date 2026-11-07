@@ -68,6 +68,28 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX idx_library_title ON library_tracks (title COLLATE NOCASE);
     `,
   },
+  {
+    version: 4,
+    name: 'favorites_announce_stay',
+    sql: `
+      ALTER TABLE guild_settings ADD COLUMN announce_mode TEXT NOT NULL DEFAULT 'all';
+      ALTER TABLE guild_settings ADD COLUMN stay_connected INTEGER NOT NULL DEFAULT 0;
+      CREATE TABLE favorites (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        source TEXT NOT NULL,
+        source_ref TEXT NOT NULL,
+        title TEXT NOT NULL,
+        artist TEXT,
+        duration_sec REAL,
+        thumbnail_url TEXT,
+        original_url TEXT,
+        created_at INTEGER NOT NULL,
+        UNIQUE (user_id, source, source_ref)
+      );
+      CREATE INDEX idx_favorites_user ON favorites (user_id, id);
+    `,
+  },
 ];
 
 /**

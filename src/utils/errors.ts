@@ -16,6 +16,7 @@ export type AppErrorCode =
   | 'VOICE_FAILED'
   | 'PERMISSION_MISSING'
   | 'RATE_LIMITED'
+  | 'QUOTA_EXCEEDED'
   | 'TIMEOUT'
   | 'CANCELLED'
   | 'INTERNAL';

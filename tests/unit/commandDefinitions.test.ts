@@ -25,6 +25,41 @@ describe('slash command definitions', () => {
     }
   });
 
+  it('lets /play take a name, a link or an attached file, and put the track next', () => {
+    const play = commands.find((command) => command.name === 'play');
+    const options = (play?.options ?? []) as readonly {
+      name: string;
+      type: number;
+      required?: boolean;
+    }[];
+
+    expect(options.map((option) => option.name)).toEqual(['source', 'file', 'next']);
+    // Attachment is type 11, boolean is type 5. Nothing is required: a file replaces the text.
+    expect(options.find((option) => option.name === 'file')?.type).toBe(11);
+    expect(options.find((option) => option.name === 'next')?.type).toBe(5);
+    expect(options.every((option) => option.required !== true)).toBe(true);
+  });
+
+  it('offers search, previous, skipto and favorites', () => {
+    const names = commands.map((command) => command.name);
+
+    expect(names).toEqual(expect.arrayContaining(['search', 'previous', 'skipto', 'favorites']));
+    const favorites = commands.find((command) => command.name === 'favorites');
+    expect((favorites?.options ?? []).map((option) => option.name)).toEqual([
+      'add',
+      'list',
+      'play',
+      'remove',
+    ]);
+  });
+
+  it('lets administrators choose what the bot writes and switch on 24/7 mode', () => {
+    const settings = commands.find((command) => command.name === 'settings');
+    const names = (settings?.options ?? []).map((option) => option.name);
+
+    expect(names).toEqual(expect.arrayContaining(['announce', 'stay-247']));
+  });
+
   it('register no more than the 100 top-level commands Discord allows', () => {
     expect(commands.length).toBeLessThanOrEqual(100);
     expect(new Set(commands.map((command) => command.name)).size).toBe(commands.length);

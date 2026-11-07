@@ -53,6 +53,8 @@ export interface GuildPlaybackSettings {
   readonly emptyTimeoutSec: number;
   readonly defaultVolume: number;
   readonly skipVotePercent: number;
+  /** 24/7 mode: stay in the voice channel instead of leaving when idle or when alone. */
+  readonly stayConnected: boolean;
 }
 
 export type ProviderLookup = (kind: SourceKind) => AudioProvider | undefined;
@@ -71,4 +73,9 @@ export type EngineEvent =
       readonly message: string;
     }
   | { readonly type: 'left_channel'; readonly guildId: string; readonly reason: LeaveReason }
-  | { readonly type: 'connection_lost'; readonly guildId: string };
+  | { readonly type: 'connection_lost'; readonly guildId: string }
+  | { readonly type: 'connection_restored'; readonly guildId: string }
+  /** The last queued track ended by itself and nothing follows. */
+  | { readonly type: 'queue_finished'; readonly guildId: string }
+  /** An administrator moved the bot to another voice channel. */
+  | { readonly type: 'moved'; readonly guildId: string; readonly channelId: string };

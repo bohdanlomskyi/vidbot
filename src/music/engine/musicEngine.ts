@@ -26,6 +26,8 @@ export interface EnqueueRequest {
   readonly voiceChannelId: string;
   readonly requesterId: string;
   readonly tracks: readonly TrackDraft[];
+  /** Put the tracks in front of the waiting queue instead of at its end. */
+  readonly playNext?: boolean;
 }
 
 export interface EnqueueResult {
@@ -65,6 +67,9 @@ const NEVER_PLAYED_MESSAGE = 'трек пуст или повреждён.';
 /** Pauses between voice reconnection attempts. The list length is the attempt limit. */
 const RECONNECT_DELAYS_MS: readonly number[] = [1_000, 3_000, 8_000];
 const NOTHING_PLAYING = 'Сейчас ничего не играет.';
+/** "Previous" restarts the current track when it has played longer than this. */
+const PREVIOUS_RESTART_MS = 5_000;
+const PLAYED_KEPT = 20;
 
 /** What opening a source produced. Loading runs outside the guild lock. */
 type LoadOutcome =
@@ -158,7 +163,7 @@ export class MusicEngine {
   skip(guildId: string): Promise<Track | null> {
     return this.locked(guildId, async () => {
       const session = this.requireSession(guildId);
-      const skipped = await this.discardCurrent(session, true);
+      const skipped = await this.discardAndRemember(session, true);
       if (skipped === null && session.queue.size === 0 && session.pendingReplay === null) {
         throw new AppError('NOT_FOUND', NOTHING_PLAYING);
       }
@@ -182,7 +187,7 @@ export class MusicEngine {
       if (votes < required) {
         return { skipped: false, votes, required };
       }
-      await this.discardCurrent(session, true);
+      await this.discardAndRemember(session, true);
       this.playNext(session);
       this.afterChange(session);
       return { skipped: true, votes, required };
@@ -204,14 +209,56 @@ export class MusicEngine {
 
   restart(guildId: string): Promise<void> {
     return this.locked(guildId, async () => {
+      await this.restartCurrent(this.requireSession(guildId));
+    });
+  }
+
+  /**
+   * Goes back to the track that played before. The current track stays next in line. A track that
+   * has played for a few seconds, or one with nothing before it, is restarted instead.
+   */
+  previous(guildId: string): Promise<'previous' | 'restarted'> {
+    return this.locked(guildId, async () => {
       const session = this.requireSession(guildId);
-      const track = await this.discardCurrent(session, false);
-      if (track === null) {
-        throw new AppError('NOT_FOUND', NOTHING_PLAYING);
+      const playback = session.current;
+      const before = session.played.at(-1);
+      if (playback === null && before === undefined) {
+        throw new AppError('NOT_FOUND', 'Предыдущего трека нет.');
       }
-      session.pendingReplay = track;
+      if (playback !== null && (before === undefined || this.elapsedOf(playback) > PREVIOUS_RESTART_MS)) {
+        await this.restartCurrent(session);
+        return 'restarted';
+      }
+      session.played.pop();
+      const current = await this.discardCurrent(session, false);
+      if (current !== null) {
+        session.queue.pushFront(current);
+      }
+      session.pendingReplay = before ?? null;
       this.playNext(session);
       this.afterChange(session);
+      return 'previous';
+    });
+  }
+
+  /** Skips ahead to the track at a 1-based queue position. The tracks before it are dropped. */
+  skipTo(guildId: string, position: number): Promise<Track> {
+    return this.locked(guildId, async () => {
+      const session = this.requireSession(guildId);
+      const target = session.queue.list()[position - 1];
+      if (target === undefined || !Number.isInteger(position)) {
+        throw new AppError('NOT_FOUND', `В очереди нет трека с номером ${String(position)}.`);
+      }
+      for (let index = 1; index < position; index += 1) {
+        const dropped = session.queue.shift();
+        if (dropped !== undefined && session.loop === 'queue') {
+          session.queue.pushBack(dropped);
+        }
+      }
+      await this.discardAndRemember(session, true);
+      this.playNext(session);
+      this.afterChange(session);
+      return target;
     });
   }
 
@@ -321,6 +368,7 @@ export class MusicEngine {
         }
       }
       session.voiceChannelId = channelId;
+      this.emit({ type: 'moved', guildId, channelId });
       this.afterChange(session);
     });
   }
@@ -429,7 +477,8 @@ export class MusicEngine {
     await this.ensureChannel(session, request.voiceChannelId);
     const now = this.now();
     const tracks = request.tracks.map((draft) => toTrack(draft, request.requesterId, now));
-    const positions = session.queue.enqueue(tracks);
+    const positions =
+      request.playNext === true ? session.queue.enqueueFront(tracks) : session.queue.enqueue(tracks);
 
     const loading = session.current === null ? this.playNext(session) : null;
     this.afterChange(session);
@@ -617,7 +666,11 @@ export class MusicEngine {
     // A source that ends before any audio played (an empty or broken file) is a failure.
     // Counting it as completed would replay it in a tight loop under track repeat.
     const neverPlayed = outcome === 'completed' && !playback.started;
-    if (outcome === 'completed' && !neverPlayed) {
+    const finishedNormally = outcome === 'completed' && !neverPlayed;
+    if (finishedNormally) {
+      if (session.loop !== 'track') {
+        this.remember(session, playback.track);
+      }
       if (session.loop === 'track') {
         session.pendingReplay = playback.track;
       } else if (session.loop === 'queue') {
@@ -628,7 +681,10 @@ export class MusicEngine {
       this.reportFailure(session, playback.track, reason);
     }
 
-    this.playNext(session);
+    const next = this.playNext(session);
+    if (next === null && finishedNormally) {
+      this.emit({ type: 'queue_finished', guildId: session.guildId });
+    }
     this.afterChange(session);
   }
 
@@ -642,6 +698,34 @@ export class MusicEngine {
     this.setState(session, 'playing');
     this.emit({ type: 'track_started', guildId: session.guildId, track: playback.track });
     this.afterChange(session);
+  }
+
+  /** Restarts the current track from the beginning. */
+  private async restartCurrent(session: GuildSession): Promise<void> {
+    const track = await this.discardCurrent(session, false);
+    if (track === null) {
+      throw new AppError('NOT_FOUND', NOTHING_PLAYING);
+    }
+    session.pendingReplay = track;
+    this.playNext(session);
+    this.afterChange(session);
+  }
+
+  /** Like discardCurrent, and remembers a track that had started for the "previous" command. */
+  private async discardAndRemember(session: GuildSession, rotate: boolean): Promise<Track | null> {
+    const wasStarted = session.current?.started === true;
+    const track = await this.discardCurrent(session, rotate);
+    if (track !== null && wasStarted && session.loop !== 'track') {
+      this.remember(session, track);
+    }
+    return track;
+  }
+
+  private remember(session: GuildSession, track: Track): void {
+    session.played.push(track);
+    if (session.played.length > PLAYED_KEPT) {
+      session.played.shift();
+    }
   }
 
   /** Discards the current track. With `rotate`, a track in repeat-queue mode goes to the back. */
@@ -787,6 +871,7 @@ export class MusicEngine {
     }
 
     session.lastNotice = 'Соединение с голосовым каналом восстановлено.';
+    this.emit({ type: 'connection_restored', guildId: session.guildId });
     const playback = session.current;
     if (playback === null) {
       if (session.pendingReplay !== null || session.queue.size > 0) {
@@ -824,6 +909,7 @@ export class MusicEngine {
     await this.discardCurrent(session, false);
     session.queue.clear();
     session.pendingReplay = null;
+    session.played.length = 0;
     session.votes.clear();
     const connection = session.connection;
     session.connection = null;
@@ -846,7 +932,7 @@ export class MusicEngine {
     const settings = this.options.settings(session.guildId);
     const listeners = connected ? this.options.listeners(session.guildId, channelId) : 0;
 
-    if (connected && listeners === 0) {
+    if (connected && listeners === 0 && !settings.stayConnected) {
       session.timers.ensure('empty', settings.emptyTimeoutSec * 1000, () => {
         this.background(session.guildId, () => this.onEmptyTimeout(session));
       });
@@ -855,7 +941,7 @@ export class MusicEngine {
     }
 
     const idle = session.state === 'idle' && session.current === null && session.queue.size === 0;
-    if (connected && idle) {
+    if (connected && idle && !settings.stayConnected) {
       session.timers.ensure('idle', settings.idleTimeoutSec * 1000, () => {
         this.background(session.guildId, () => this.onIdleTimeout(session));
       });

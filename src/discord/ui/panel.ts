@@ -5,7 +5,18 @@ import type { Track } from '../../music/models/track.js';
 import type { LoopMode } from '../../music/ports.js';
 import { escapeMarkdown, formatDuration, progressBar, truncate } from '../../utils/format.js';
 
-export type PanelAction = 'restart' | 'toggle' | 'skip' | 'stop' | 'queue' | 'loop';
+export type PanelAction =
+  | 'restart'
+  | 'previous'
+  | 'toggle'
+  | 'skip'
+  | 'stop'
+  | 'queue'
+  | 'loop'
+  | 'shuffle'
+  | 'favorite'
+  | 'volup'
+  | 'voldown';
 
 export interface MessagePayload {
   readonly embeds: EmbedBuilder[];
@@ -14,12 +25,6 @@ export interface MessagePayload {
 
 export const QUEUE_PAGE_SIZE = 10;
 const UPCOMING_SHOWN = 3;
-
-const LOOP_LABELS: Readonly<Record<LoopMode, string>> = {
-  off: 'Повтор: выкл',
-  track: 'Повтор: трек',
-  queue: 'Повтор: очередь',
-};
 
 const LOOP_SHORT: Readonly<Record<LoopMode, string>> = {
   off: 'выкл',
@@ -90,31 +95,35 @@ function playingEmbed(snapshot: GuildSnapshot, botName: string): EmbedBuilder {
     track.durationSec !== null && track.durationSec > 0
       ? Math.min(1, elapsedSec / track.durationSec)
       : 0;
-  const artist = track.artist !== null ? `\n${escapeMarkdown(truncate(track.artist, 100))}` : '';
+  const position = `${playing.paused ? '⏸' : '▶'} \`[${formatDuration(elapsedSec)}/${formatDuration(track.durationSec)}]\` ${progressBar(ratio, 12)}`;
 
   const embed = new EmbedBuilder()
-    .setTitle(panelTitle(snapshot.state, playing.paused))
-    .setDescription(`**${escapeMarkdown(truncate(track.title, 200))}**${artist}`)
+    .setAuthor({ name: panelTitle(snapshot.state, playing.paused) })
+    .setTitle(escapeMarkdown(truncate(track.title, 200)))
+    .setDescription(position)
     .addFields(
       { name: 'Источник', value: SOURCE_LABELS[track.source], inline: true },
-      { name: 'Длительность', value: formatDuration(track.durationSec), inline: true },
       {
-        name: 'Позиция',
-        value: `${formatDuration(elapsedSec)} ${progressBar(ratio, 10)}`,
+        name: 'Автор',
+        value: track.artist !== null ? escapeMarkdown(truncate(track.artist, 100)) : '—',
         inline: true,
       },
-      { name: 'Добавил', value: `<@${track.requesterId}>`, inline: true },
+      { name: 'Длительность', value: formatDuration(track.durationSec), inline: true },
       {
         name: 'В очереди',
         value: `${String(snapshot.queue.length)} из ${String(snapshot.queueLimit)}`,
         inline: true,
       },
-      { name: 'Повтор', value: LOOP_LABELS[snapshot.loop], inline: true },
+      { name: 'Громкость', value: `${String(snapshot.volume)}%`, inline: true },
+      { name: 'Запросил', value: `<@${track.requesterId}>`, inline: true },
     )
     .setFooter({
-      text: `${botName} · громкость ${String(snapshot.volume)}% · слушателей: ${String(snapshot.listeners)}`,
+      text: `${botName} · слушателей: ${String(snapshot.listeners)} · повтор: ${LOOP_SHORT[snapshot.loop]}`,
     });
 
+  if (track.originalUrl?.startsWith('https://') === true) {
+    embed.setURL(track.originalUrl);
+  }
   if (track.thumbnailUrl !== null && track.thumbnailUrl.startsWith('https://')) {
     embed.setThumbnail(track.thumbnailUrl);
   }
@@ -156,18 +165,23 @@ function upcomingLines(queue: readonly Track[]): string {
 function panelRows(snapshot: GuildSnapshot): ActionRowBuilder<ButtonBuilder>[] {
   const idle = snapshot.nowPlaying === null;
   const disconnected = snapshot.voiceChannelId === null;
+  const paused = snapshot.nowPlaying?.paused === true;
 
   const controls = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    panelButton('restart', '⏮', ButtonStyle.Secondary, idle),
-    panelButton('toggle', '⏯', ButtonStyle.Primary, idle),
-    panelButton('skip', '⏭', ButtonStyle.Secondary, idle),
-    panelButton('stop', '⏹', ButtonStyle.Secondary, disconnected),
-  );
-  const views = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    panelButton('previous', '⏮ Назад', ButtonStyle.Secondary, idle),
+    panelButton('toggle', paused ? '▶ Продолжить' : '⏸ Пауза', ButtonStyle.Primary, idle),
+    panelButton('skip', '⏭ Далее', ButtonStyle.Secondary, idle),
+    panelButton('stop', '⏹ Стоп', ButtonStyle.Danger, disconnected),
     panelButton('queue', '📋 Очередь', ButtonStyle.Secondary, false),
-    panelButton('loop', `🔁 ${LOOP_SHORT[snapshot.loop]}`, ButtonStyle.Secondary, false),
   );
-  return [controls, views];
+  const extras = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    panelButton('shuffle', '🔀 Перемешать', ButtonStyle.Secondary, snapshot.queue.length < 2),
+    panelButton('loop', `🔁 Повтор: ${LOOP_SHORT[snapshot.loop]}`, ButtonStyle.Secondary, false),
+    panelButton('favorite', '⭐ В избранное', ButtonStyle.Secondary, idle),
+    panelButton('voldown', '🔉 −', ButtonStyle.Secondary, false),
+    panelButton('volup', '🔊 +', ButtonStyle.Secondary, false),
+  );
+  return [controls, extras];
 }
 
 function panelButton(

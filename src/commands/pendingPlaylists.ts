@@ -9,6 +9,8 @@ interface Pending {
   readonly userId: string;
   readonly voiceChannelId: string;
   readonly tracks: readonly TrackDraft[];
+  /** Queue the tracks in front of the waiting ones. Set by /play with "next". */
+  readonly playNext?: boolean;
   readonly expiresAt: number;
 }
 
@@ -46,6 +48,15 @@ export class PendingPlaylists {
     }
     this.items.delete(token);
     return entry;
+  }
+
+  /** Like `take`, but keeps the entry so a failed attempt can be repeated. */
+  peek(token: string, guildId: string, userId: string): Pending | null {
+    this.sweep();
+    const entry = this.items.get(token);
+    return entry === undefined || entry.guildId !== guildId || entry.userId !== userId
+      ? null
+      : entry;
   }
 
   remove(token: string): void {

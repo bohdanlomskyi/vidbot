@@ -5,10 +5,14 @@ import type { TrackDraft, SourceKind } from './models/track.js';
 const MAX_INPUT_LENGTH = 500;
 const URL_LIKE = /^[a-z][a-z0-9+.-]*:\/\//i;
 
+const LIBRARY_ID = /^lib-[0-9a-f]{12}$/;
+
 export interface SourceRouterDeps {
   readonly local: AudioProvider;
   readonly streams: AudioProvider;
   readonly youtube: AudioProvider;
+  /** True when the music library has a track with exactly this title. */
+  readonly libraryHasTitle?: (title: string) => boolean;
 }
 
 /**
@@ -19,6 +23,32 @@ export interface SourceRouterDeps {
  */
 export class SourceRouter {
   constructor(private readonly deps: SourceRouterDeps) {}
+
+  /**
+   * True when plain text should be searched on YouTube and offered as a short list: YouTube must
+   * be on for the guild, and the text must not be a link, a catalog or library identifier, or the
+   * exact title of a track in the library (that one plays straight away).
+   */
+  wantsSearch(rawInput: string, allowed: readonly SourceKind[]): boolean {
+    if (!allowed.includes('youtube') || !this.deps.youtube.enabled) {
+      return false;
+    }
+    let input: string;
+    try {
+      input = normalize(rawInput);
+    } catch {
+      return false;
+    }
+    if (
+      this.deps.youtube.canHandle(input) ||
+      URL_LIKE.test(input) ||
+      this.deps.streams.canHandle(input) ||
+      LIBRARY_ID.test(input)
+    ) {
+      return false;
+    }
+    return this.deps.libraryHasTitle?.(input) !== true;
+  }
 
   async resolve(
     rawInput: string,

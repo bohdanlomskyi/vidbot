@@ -118,6 +118,8 @@ describe('toPlaybackSettings', () => {
       defaultVolume: 70,
       skipVotePercent: 50,
       allowedSources: ['local'],
+      announceMode: 'all',
+      stayConnected: true,
     };
 
     expect(toPlaybackSettings(settings)).toEqual({
@@ -127,6 +129,7 @@ describe('toPlaybackSettings', () => {
       emptyTimeoutSec: 60,
       defaultVolume: 70,
       skipVotePercent: 50,
+      stayConnected: true,
     });
   });
 });

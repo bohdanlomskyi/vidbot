@@ -4,6 +4,7 @@ import type { Logger } from 'pino';
 import type { AppServices } from '../commands/context.js';
 import { PendingPlaylists } from '../commands/pendingPlaylists.js';
 import { LibraryCatalog } from '../audio/library/catalog.js';
+import { UploadService } from '../audio/library/uploads.js';
 import { AuthorizedStreamProvider } from '../audio/providers/streamProvider.js';
 import {
   type StreamCatalogParseResult,
@@ -16,10 +17,13 @@ import { OpusWorkerEncoder } from '../audio/opus/opusWorkerEncoder.js';
 import { probeAudioFile } from '../audio/pipeline/probe.js';
 import type { AppConfig } from '../config/load.js';
 import { checkDatabase, openDatabase } from '../database/db.js';
+import { FavoritesRepository } from '../database/favoritesRepository.js';
 import { HistoryRepository } from '../database/historyRepository.js';
 import { LibraryRepository } from '../database/libraryRepository.js';
 import { migrate } from '../database/migrations.js';
 import { GuildSettingsRepository } from '../database/settingsRepository.js';
+import { Announcer } from '../discord/announcer.js';
+import { ChannelFollower } from '../discord/channelFollower.js';
 import { PanelManager } from '../discord/ui/panelManager.js';
 import { DiscordAudioPlayer, DiscordVoicePort } from '../discord/voice/discordVoice.js';
 import { countListeners } from '../discord/voice/listeners.js';
@@ -29,6 +33,7 @@ import type { SourceKind } from '../music/models/track.js';
 import { guildSettingsDefaults } from './guildDefaults.js';
 import { SourceRouter } from '../music/sourceRouter.js';
 import { SlidingWindowRateLimiter } from '../utils/rateLimiter.js';
+import { describeEngineEvent } from './engineAnnouncements.js';
 import { handleEngineEvent, toPlaybackSettings } from './engineEvents.js';
 import { Heartbeat, type HealthStatus } from './heartbeat.js';
 import { scheduleLibraryRescan } from './librarySchedule.js';
@@ -37,6 +42,10 @@ import { readToolVersion } from './tools.js';
 /** Play history kept per guild. Older rows are trimmed on every insert. */
 const HISTORY_RETENTION_PER_GUILD = 200;
 const RATE_WINDOW_MS = 10_000;
+/** Saved tracks each member can keep. */
+const FAVORITES_LIMIT = 100;
+/** A rescan asked for by a command is skipped when the library was scanned this recently. */
+const RESCAN_MIN_GAP_MS = 15_000;
 const PROBE_TIMEOUT_MS = 20_000;
 /** Stream timeouts: how long to wait for headers, and how much silence the body may have. */
 const STREAM_TIMEOUTS = { responseMs: 15_000, idleMs: 15_000 } as const;
@@ -99,12 +108,20 @@ export async function createApp(config: AppConfig, logger: Logger): Promise<App>
     maxConcurrency: config.youtube.maxConcurrency,
     timeoutSec: config.youtube.timeoutSec,
   });
-  const sources = new SourceRouter({ local, streams, youtube });
+  const sources = new SourceRouter({
+    local,
+    streams,
+    youtube,
+    libraryHasTitle: (title) =>
+      catalog.search(title, 5).some((row) => row.title.toLowerCase() === title.toLowerCase()),
+  });
   const providerByKind: Record<SourceKind, AudioProvider> = { local, stream: streams, youtube };
 
   // Opus is encoded in a worker thread when it starts; otherwise on the main thread as before.
   const opusEncoder = await OpusWorkerEncoder.start(logger);
   const client: Client = createClient();
+  const follower = new ChannelFollower();
+  const announcer = new Announcer({ client, settings, follower, logger });
   // The panel needs the engine, and the engine notifies the panel. The holder breaks that cycle.
   const panelHolder: { panel?: PanelManager } = {};
   const engine = new MusicEngine({
@@ -118,10 +135,25 @@ export async function createApp(config: AppConfig, logger: Logger): Promise<App>
     },
     onEvent: (event) => {
       handleEngineEvent(event, { history, logger, now: () => Date.now() });
+      if (event.type === 'track_started') {
+        // The panel moves to the bottom of the chat, under the message about the new track.
+        panelHolder.panel?.requestRepost(event.guildId);
+      }
+      const note = describeEngineEvent(event);
+      if (note !== null) {
+        void announcer.say(event.guildId, note.kind, note.text);
+      }
     },
     logger,
   });
-  const panel = new PanelManager({ client, engine, settings, botName: config.botName, logger });
+  const panel = new PanelManager({
+    client,
+    engine,
+    settings,
+    botName: config.botName,
+    logger,
+    follower,
+  });
   panelHolder.panel = panel;
 
   const ffmpegVersion = await readToolVersion(config.ffmpeg.ffmpegPath, ['-version']);
@@ -131,6 +163,28 @@ export async function createApp(config: AppConfig, logger: Logger): Promise<App>
       'FFmpeg could not be started, so no audio can play',
     );
   }
+
+  let lastLibraryScan = 0;
+  async function refreshLibrary(): Promise<void> {
+    lastLibraryScan = Date.now();
+    try {
+      const summary = await catalog.refresh();
+      logger.info({ summary }, 'The music library was scanned');
+    } catch (error) {
+      logger.warn({ err: error }, 'The music library scan failed');
+    }
+  }
+
+  const uploads = config.uploads.enabled
+    ? new UploadService({
+        musicDir: config.paths.musicDir,
+        maxBytes: config.uploads.maxBytes,
+        quotaBytes: config.uploads.quotaBytes,
+        probe: (absolutePath) =>
+          probeAudioFile(config.ffmpeg.ffprobePath, absolutePath, PROBE_TIMEOUT_MS),
+        refresh: () => catalog.refresh(),
+      })
+    : null;
 
   const services: AppServices = {
     config,
@@ -148,6 +202,16 @@ export async function createApp(config: AppConfig, logger: Logger): Promise<App>
       windowMs: RATE_WINDOW_MS,
     }),
     pendingPlaylists: new PendingPlaylists(),
+    pendingSearches: new PendingPlaylists(),
+    announcer,
+    favorites: new FavoritesRepository(db, FAVORITES_LIMIT),
+    uploads,
+    refreshLibrary: async () => {
+      // A track the member just copied into the music folder should be found at once.
+      if (Date.now() - lastLibraryScan >= RESCAN_MIN_GAP_MS) {
+        await refreshLibrary();
+      }
+    },
     status: { databaseOk: databaseCheck.ok, ffmpegVersion },
     startedAt: Date.now(),
   };
@@ -163,15 +227,6 @@ export async function createApp(config: AppConfig, logger: Logger): Promise<App>
 
   let stopping: Promise<void> | undefined;
   let stopRescan: () => void = () => undefined;
-
-  async function refreshLibrary(): Promise<void> {
-    try {
-      const summary = await catalog.refresh();
-      logger.info({ summary }, 'The music library was scanned');
-    } catch (error) {
-      logger.warn({ err: error }, 'The music library scan failed');
-    }
-  }
 
   async function shutdown(): Promise<void> {
     stopRescan();

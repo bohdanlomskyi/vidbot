@@ -3,6 +3,7 @@ import type { Readable } from 'node:stream';
 
 const STDOUT_LIMIT = 4 * 1024 * 1024;
 const STDERR_LIMIT = 16 * 1024;
+const STDERR_LINE_LIMIT = 64 * 1024;
 const GRACE_MS = 2_000;
 
 export interface ProcessExit {
@@ -106,18 +107,38 @@ export interface StreamingProcess {
   stop(): Promise<void>;
 }
 
+export interface StreamingOptions {
+  /** Called once for each complete line the process writes to standard error. */
+  readonly onStderrLine?: (line: string) => void;
+}
+
 /** Starts a process whose standard output is media, for example yt-dlp writing audio to stdout. */
-export function spawnStreamingProcess(binary: string, args: readonly string[]): StreamingProcess {
+export function spawnStreamingProcess(
+  binary: string,
+  args: readonly string[],
+  options: StreamingOptions = {},
+): StreamingProcess {
   const child: ChildProcessByStdio<null, Readable, Readable> = spawn(binary, [...args], {
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   });
 
   let stderr = '';
+  let partial = '';
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', (chunk: string) => {
     if (stderr.length < STDERR_LIMIT) {
       stderr += chunk.slice(0, STDERR_LIMIT - stderr.length);
+    }
+    if (options.onStderrLine !== undefined) {
+      // The metadata line is far smaller than this cap; later noise is not kept.
+      partial = (partial + chunk).slice(-STDERR_LINE_LIMIT);
+      let newline = partial.indexOf('\n');
+      while (newline !== -1) {
+        options.onStderrLine(partial.slice(0, newline).trim());
+        partial = partial.slice(newline + 1);
+        newline = partial.indexOf('\n');
+      }
     }
   });
 

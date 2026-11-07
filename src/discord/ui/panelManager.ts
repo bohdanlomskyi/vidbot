@@ -3,11 +3,13 @@ import type { Logger } from 'pino';
 import type { GuildSettingsRepository } from '../../database/settingsRepository.js';
 import type { MusicEngine } from '../../music/engine/musicEngine.js';
 import type { GuildSnapshot } from '../../music/engine/snapshot.js';
+import { ChannelFollower } from '../channelFollower.js';
 import { buildPanelPayload } from './panel.js';
 
 const UNKNOWN_MESSAGE = 10_008;
 const UNKNOWN_CHANNEL = 10_003;
 const MISSING_ACCESS = 50_001;
+const MISSING_PERMISSIONS = 50_013;
 const REFRESH_DELAY_MS = 1_000;
 
 export interface PanelManagerOptions {
@@ -17,6 +19,15 @@ export interface PanelManagerOptions {
   readonly botName: string;
   readonly logger: Pick<Logger, 'info' | 'warn' | 'error'>;
   readonly refreshDelayMs?: number;
+  /** Where the latest command was used. The panel goes there when no channel is fixed. */
+  readonly follower?: ChannelFollower;
+}
+
+/** Where a guild's panel lives. A fixed one comes from /setup, a followed one from the last command. */
+interface Target {
+  readonly channelId: string;
+  readonly messageId: string | null;
+  readonly fixed: boolean;
 }
 
 /**
@@ -24,6 +35,8 @@ export interface PanelManagerOptions {
  * per guild and run one at a time, so two refreshes can never both create a message. An
  * edit is skipped when nothing shown on the panel changed. A deleted message is recreated,
  * and a missing channel or access problem is logged once instead of being retried in a loop.
+ * With a channel fixed by /setup the panel stays there. Otherwise it follows the channel of the
+ * latest command, and moves to the bottom of the chat when a new track starts.
  */
 export class PanelManager {
   private readonly pending = new Map<string, ReturnType<typeof setTimeout>>();
@@ -32,11 +45,28 @@ export class PanelManager {
   private readonly rerun = new Set<string>();
   /** What each guild's panel message shows now, keyed by message. */
   private readonly shown = new Map<string, string>();
+  /** Panels that follow commands: the message each guild's panel is in now. Not persisted. */
+  private readonly followed = new Map<string, { channelId: string; messageId: string }>();
+  /** Guilds whose followed panel must be sent again, at the bottom of the chat. */
+  private readonly reposts = new Set<string>();
+  private readonly follower: ChannelFollower;
   private readonly delay: number;
   private disposed = false;
 
   constructor(private readonly options: PanelManagerOptions) {
     this.delay = options.refreshDelayMs ?? REFRESH_DELAY_MS;
+    this.follower = options.follower ?? new ChannelFollower();
+  }
+
+  /** The player panel and chat messages go to `channelId` from now on, unless /setup fixed one. */
+  follow(guildId: string, channelId: string): void {
+    this.follower.set(guildId, channelId);
+  }
+
+  /** Sends the followed panel again, so it sits under the newest messages. */
+  requestRepost(guildId: string): void {
+    this.reposts.add(guildId);
+    this.requestRefresh(guildId);
   }
 
   /** Cancels pending refreshes. Called during shutdown, before the database is closed. */
@@ -47,6 +77,7 @@ export class PanelManager {
     }
     this.pending.clear();
     this.rerun.clear();
+    this.reposts.clear();
   }
 
   requestRefresh(guildId: string): void {
@@ -97,19 +128,31 @@ export class PanelManager {
 
   private async refresh(guildId: string): Promise<void> {
     const settings = this.options.settings.get(guildId);
-    if (settings.textChannelId === null) {
+    const target = this.targetFor(guildId, settings.textChannelId, settings.panelMessageId);
+    if (target === null) {
       return;
     }
     const snapshot = this.options.engine.snapshot(guildId);
+    const repostWanted = this.reposts.delete(guildId);
+    const repost = !target.fixed && repostWanted;
+    let messageId = target.messageId;
+    const moved = !target.fixed && this.followed.get(guildId)?.channelId !== target.channelId;
     if (
-      settings.panelMessageId !== null &&
-      this.shown.get(guildId) === shownKey(settings.panelMessageId, snapshot)
+      !repost &&
+      !moved &&
+      messageId !== null &&
+      this.shown.get(guildId) === shownKey(messageId, snapshot)
     ) {
       return;
     }
-    const channel = await this.resolveChannel(guildId, settings.textChannelId);
+    const channel = await this.resolveChannel(guildId, target.channelId);
     if (channel === null) {
       return;
+    }
+
+    if (!target.fixed && (repost || moved)) {
+      await this.deleteFollowed(guildId);
+      messageId = null;
     }
 
     const payload = {
@@ -117,10 +160,10 @@ export class PanelManager {
       allowedMentions: { parse: [] as [] },
     };
 
-    if (settings.panelMessageId !== null) {
+    if (messageId !== null) {
       try {
-        await channel.messages.edit(settings.panelMessageId, payload);
-        this.shown.set(guildId, shownKey(settings.panelMessageId, snapshot));
+        await channel.messages.edit(messageId, payload);
+        this.shown.set(guildId, shownKey(messageId, snapshot));
         return;
       } catch (error) {
         this.shown.delete(guildId);
@@ -134,10 +177,50 @@ export class PanelManager {
 
     try {
       const message = await channel.send(payload);
-      this.options.settings.setPanel(guildId, channel.id, message.id);
+      if (target.fixed) {
+        this.options.settings.setPanel(guildId, channel.id, message.id);
+      } else {
+        this.followed.set(guildId, { channelId: channel.id, messageId: message.id });
+      }
       this.shown.set(guildId, shownKey(message.id, snapshot));
     } catch (error) {
       this.reportFailure(guildId, error);
+    }
+  }
+
+  private targetFor(
+    guildId: string,
+    fixedChannelId: string | null,
+    fixedMessageId: string | null,
+  ): Target | null {
+    if (fixedChannelId !== null) {
+      return { channelId: fixedChannelId, messageId: fixedMessageId, fixed: true };
+    }
+    const channelId = this.follower.get(guildId);
+    if (channelId === null) {
+      return null;
+    }
+    const current = this.followed.get(guildId);
+    return {
+      channelId,
+      messageId: current?.channelId === channelId ? current.messageId : null,
+      fixed: false,
+    };
+  }
+
+  /** Deletes the followed panel message, wherever it is. A message that is already gone is fine. */
+  private async deleteFollowed(guildId: string): Promise<void> {
+    const current = this.followed.get(guildId);
+    this.followed.delete(guildId);
+    this.shown.delete(guildId);
+    if (current === undefined) {
+      return;
+    }
+    try {
+      const channel = await this.resolveChannel(guildId, current.channelId);
+      await channel?.messages.delete(current.messageId);
+    } catch {
+      // Deleting is a tidy-up only; a message that cannot be deleted stays as a stale panel.
     }
   }
 
@@ -174,8 +257,8 @@ export class PanelManager {
 
   private reportFailure(guildId: string, error: unknown): void {
     const code = error instanceof DiscordAPIError ? error.code : undefined;
-    if (code === MISSING_ACCESS) {
-      this.options.logger.warn({ guildId }, 'The bot cannot write to the panel channel');
+    if (code === MISSING_ACCESS || code === MISSING_PERMISSIONS) {
+      this.options.logger.warn({ guildId }, 'The bot cannot write to the chat channel');
       return;
     }
     this.options.logger.error({ guildId, err: error }, 'Panel update failed');

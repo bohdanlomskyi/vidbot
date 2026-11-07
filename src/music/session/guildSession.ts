@@ -39,6 +39,8 @@ export class GuildSession {
   voiceChannelId: string | null = null;
   current: CurrentPlayback | null = null;
   pendingReplay: Track | null = null;
+  /** Tracks that played before the current one, newest last. Used by "previous". */
+  readonly played: Track[] = [];
   loop: LoopMode = 'off';
   volume: number;
   readonly queue: TrackQueue;

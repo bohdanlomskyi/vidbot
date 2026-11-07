@@ -45,6 +45,14 @@ export function handleEngineEvent(event: EngineEvent, deps: EngineEventDeps): vo
     case 'connection_lost':
       deps.logger.warn({ guildId: event.guildId }, 'Voice connection was lost');
       return;
+    case 'connection_restored':
+      deps.logger.info({ guildId: event.guildId }, 'Voice connection was restored');
+      return;
+    case 'queue_finished':
+      return;
+    case 'moved':
+      deps.logger.info({ guildId: event.guildId }, 'The bot was moved to another channel');
+      return;
   }
 }
 
@@ -57,5 +65,6 @@ export function toPlaybackSettings(settings: GuildSettings): GuildPlaybackSettin
     emptyTimeoutSec: settings.emptyTimeoutSec,
     defaultVolume: settings.defaultVolume,
     skipVotePercent: settings.skipVotePercent,
+    stayConnected: settings.stayConnected,
   };
 }

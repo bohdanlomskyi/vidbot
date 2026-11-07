@@ -37,6 +37,12 @@ export interface AppConfig {
   readonly rateLimit: {
     readonly perUserPer10s: number;
   };
+  /** Audio files that members attach to /play. They are kept in the library's uploads folder. */
+  readonly uploads: {
+    readonly enabled: boolean;
+    readonly maxBytes: number;
+    readonly quotaBytes: number;
+  };
   readonly streams: {
     readonly enabled: boolean;
     readonly maxBytes: number;
@@ -75,6 +81,9 @@ const DEFAULTS: Readonly<Record<string, string>> = {
   IDLE_TIMEOUT_SEC: '300',
   EMPTY_CHANNEL_TIMEOUT_SEC: '60',
   RATE_LIMIT_PER_10S: '6',
+  UPLOADS_ENABLED: 'true',
+  UPLOAD_MAX_MB: '25',
+  UPLOAD_QUOTA_MB: '2000',
   STREAM_PROVIDER_ENABLED: 'false',
   STREAM_CATALOG_FILE: 'config/streams.json',
   STREAM_MAX_BYTES: '536870912',
@@ -122,6 +131,9 @@ const envSchema = z.object({
   IDLE_TIMEOUT_SEC: integerIn(10, 3_600),
   EMPTY_CHANNEL_TIMEOUT_SEC: integerIn(10, 600),
   RATE_LIMIT_PER_10S: integerIn(1, 60),
+  UPLOADS_ENABLED: flag,
+  UPLOAD_MAX_MB: integerIn(1, 500),
+  UPLOAD_QUOTA_MB: integerIn(10, 100_000),
   STREAM_PROVIDER_ENABLED: flag,
   STREAM_CATALOG_FILE: z.string().min(1),
   STREAM_MAX_BYTES: integerIn(1_048_576, 4_294_967_296),
@@ -193,6 +205,11 @@ export function loadConfig(
     },
     rateLimit: {
       perUserPer10s: data.RATE_LIMIT_PER_10S,
+    },
+    uploads: {
+      enabled: data.UPLOADS_ENABLED,
+      maxBytes: data.UPLOAD_MAX_MB * 1_048_576,
+      quotaBytes: data.UPLOAD_QUOTA_MB * 1_048_576,
     },
     streams: {
       enabled: data.STREAM_PROVIDER_ENABLED,

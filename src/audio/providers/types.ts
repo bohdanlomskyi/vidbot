@@ -3,6 +3,11 @@ import type { SourceKind, Track, TrackDraft } from '../../music/models/track.js'
 
 export interface ResolveContext {
   readonly signal: AbortSignal;
+  /**
+   * True when the resolved track will start playing right away. A provider may then begin
+   * opening it already while it resolves, which saves the time of a second lookup.
+   */
+  readonly willPlayNow?: boolean;
 }
 
 /**

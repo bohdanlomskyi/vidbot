@@ -154,4 +154,124 @@ describe('PanelManager', () => {
       expect(channel.messages.edit).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe('following the channel of the latest command', () => {
+    function channelNamed(id: string, sentIds: string[]) {
+      return {
+        id,
+        guildId: 'guild-1',
+        isTextBased: () => true,
+        isDMBased: () => false,
+        send: vi.fn(() => {
+          const messageId = `m-${id}-${String(sentIds.length)}`;
+          sentIds.push(messageId);
+          return Promise.resolve({ id: messageId });
+        }),
+        messages: { edit: vi.fn(() => Promise.resolve()), delete: vi.fn(() => Promise.resolve()) },
+      };
+    }
+
+    function followed() {
+      const sent: string[] = [];
+      const first = channelNamed('100000000000000001', sent);
+      const second = channelNamed('100000000000000002', sent);
+      const settings = {
+        get: vi.fn(
+          () => ({ textChannelId: null, panelMessageId: null }) as unknown as GuildSettings,
+        ),
+        setPanel: vi.fn(),
+        clearPanelMessage: vi.fn(),
+      };
+      let volume = 70;
+      const panel = new PanelManager({
+        client: {
+          channels: {
+            cache: new Map([
+              [first.id, first],
+              [second.id, second],
+            ]),
+          },
+        } as unknown as Client,
+        engine: {
+          snapshot: () => ({
+            guildId: 'guild-1',
+            state: 'idle',
+            voiceChannelId: null,
+            nowPlaying: null,
+            queue: [],
+            queueLimit: 100,
+            loop: 'off',
+            volume,
+            listeners: 0,
+            notice: null,
+          }),
+        } as unknown as MusicEngine,
+        settings: settings as unknown as GuildSettingsRepository,
+        botName: 'Melody',
+        logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+        refreshDelayMs: 1,
+      });
+      return {
+        panel,
+        first,
+        second,
+        settings,
+        setVolume: (value: number) => {
+          volume = value;
+        },
+      };
+    }
+
+    it('posts nothing until a command has shown where to post', async () => {
+      const { panel, first } = followed();
+
+      panel.requestRefresh('guild-1');
+      await wait(20);
+
+      expect(first.send).not.toHaveBeenCalled();
+    });
+
+    it('creates the panel in the channel of the command and edits it afterwards', async () => {
+      const { panel, first, settings, setVolume } = followed();
+      panel.follow('guild-1', first.id);
+
+      panel.requestRefresh('guild-1');
+      await wait(20);
+      setVolume(20);
+      panel.requestRefresh('guild-1');
+      await wait(20);
+
+      expect(first.send).toHaveBeenCalledTimes(1);
+      expect(first.messages.edit).toHaveBeenCalledTimes(1);
+      expect(settings.setPanel).not.toHaveBeenCalled();
+    });
+
+    it('moves the panel when a command is used in another channel', async () => {
+      const { panel, first, second } = followed();
+      panel.follow('guild-1', first.id);
+      panel.requestRefresh('guild-1');
+      await wait(20);
+
+      panel.follow('guild-1', second.id);
+      panel.requestRefresh('guild-1');
+      await wait(20);
+
+      expect(first.messages.delete).toHaveBeenCalledTimes(1);
+      expect(second.send).toHaveBeenCalledTimes(1);
+    });
+
+    it('sends the panel again at the bottom when asked to, replacing the old message', async () => {
+      const { panel, first } = followed();
+      panel.follow('guild-1', first.id);
+      panel.requestRefresh('guild-1');
+      await wait(20);
+
+      panel.requestRepost('guild-1');
+      await wait(20);
+
+      expect(first.messages.delete).toHaveBeenCalledTimes(1);
+      expect(first.send).toHaveBeenCalledTimes(2);
+      expect(first.messages.edit).not.toHaveBeenCalled();
+    });
+  });
 });

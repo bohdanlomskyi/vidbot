@@ -47,6 +47,24 @@ export class TrackQueue {
     return tracks.map((_track, index) => first + index);
   }
 
+  /** Adds the batch in front of everything waiting, keeping its own order. Respects capacity. */
+  enqueueFront(tracks: readonly Track[]): number[] {
+    if (this.items.length + tracks.length > this.capacity) {
+      const free = Math.max(0, this.capacity - this.items.length);
+      throw new AppError(
+        'QUEUE_FULL',
+        `Очередь заполнена: свободно мест ${String(free)} из ${String(this.capacity)}.`,
+      );
+    }
+    this.items.unshift(...tracks);
+    return tracks.map((_track, index) => index + 1);
+  }
+
+  /** Puts a track that was already playing back in front, whatever the capacity. */
+  pushFront(track: Track): void {
+    this.items.unshift(track);
+  }
+
   pushBack(track: Track): void {
     this.items.push(track);
   }

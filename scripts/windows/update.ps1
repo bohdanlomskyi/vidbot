@@ -27,6 +27,8 @@ if ($null -ne $git -and (Test-Path -LiteralPath (Join-Path $Root '.git'))) {
     $refs = @()
     if (Test-Path -LiteralPath $sourceFile) { $refs += (Get-Content -LiteralPath $sourceFile -Raw).Trim() }
     $refs += 'main'
+    # A ZIP install has no source.txt. Until the guide lives on main, it is on this branch.
+    $refs += 'claude/quirky-brahmagupta-lz9mjn'
     $temp = Join-Path ([IO.Path]::GetTempPath()) ("melody-update-" + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Force -Path $temp | Out-Null
     try {

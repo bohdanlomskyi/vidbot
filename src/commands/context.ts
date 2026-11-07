@@ -12,11 +12,14 @@ import type { Logger } from 'pino';
 import type { AppConfig } from '../config/load.js';
 import type { AuthorizedStreamProvider } from '../audio/providers/streamProvider.js';
 import type { LibraryCatalog } from '../audio/library/catalog.js';
+import type { UploadService } from '../audio/library/uploads.js';
 import type { YouTubeExperimentalProvider } from '../audio/providers/youtubeProvider.js';
 import type { GuildSettingsRepository } from '../database/settingsRepository.js';
+import type { FavoritesRepository } from '../database/favoritesRepository.js';
 import type { HistoryRepository } from '../database/historyRepository.js';
 import type { MusicEngine } from '../music/engine/musicEngine.js';
 import type { SourceRouter } from '../music/sourceRouter.js';
+import type { Announcer } from '../discord/announcer.js';
 import type { PanelManager } from '../discord/ui/panelManager.js';
 import type { SlidingWindowRateLimiter } from '../utils/rateLimiter.js';
 import { AppError } from '../utils/errors.js';
@@ -36,6 +39,14 @@ export interface AppServices {
   readonly panel: PanelManager;
   readonly rateLimiter: SlidingWindowRateLimiter;
   readonly pendingPlaylists: PendingPlaylists;
+  /** Search results waiting for the member to pick one. */
+  readonly pendingSearches: PendingPlaylists;
+  readonly announcer: Announcer;
+  readonly favorites: FavoritesRepository;
+  /** Null when the operator turned uploads off. */
+  readonly uploads: UploadService | null;
+  /** Rescans the music library now, unless it was scanned a few seconds ago. */
+  readonly refreshLibrary: () => Promise<void>;
   readonly status: { readonly databaseOk: boolean; readonly ffmpegVersion: string | null };
   readonly startedAt: number;
 }

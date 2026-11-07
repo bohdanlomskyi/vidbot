@@ -183,6 +183,74 @@ export function parsePlaylistEntries(json: string, limit: number): PlaylistEntry
   return result;
 }
 
+export interface SearchResult {
+  readonly id: string;
+  readonly title: string;
+  readonly channel: string | null;
+  readonly durationSec: number;
+  readonly thumbnailUrl: string | null;
+}
+
+/**
+ * Reads a flat search listing. Live streams, videos with an unknown or too long duration and
+ * entries without a valid identifier are skipped, so every result can actually be played.
+ */
+export function parseSearchResults(
+  json: string,
+  options: { maxDurationSec: number; limit: number },
+): SearchResult[] {
+  const data = parseObject(json);
+  const entries: unknown[] = Array.isArray(data.entries) ? (data.entries as unknown[]) : [];
+
+  const results: SearchResult[] = [];
+  for (const item of entries) {
+    if (results.length >= options.limit) {
+      break;
+    }
+    if (typeof item !== 'object' || item === null) {
+      continue;
+    }
+    const entry = item as Record<string, unknown>;
+    const duration = entry.duration;
+    if (
+      typeof entry.id !== 'string' ||
+      !VIDEO_ID.test(entry.id) ||
+      typeof duration !== 'number' ||
+      !Number.isFinite(duration) ||
+      duration <= 0 ||
+      duration > options.maxDurationSec ||
+      entry.is_live === true ||
+      LIVE_STATES.has(String(entry.live_status))
+    ) {
+      continue;
+    }
+    results.push({
+      id: entry.id,
+      title: nonEmpty(entry.title) ?? 'Видео YouTube',
+      channel: nonEmpty(entry.channel) ?? nonEmpty(entry.uploader),
+      durationSec: duration,
+      thumbnailUrl: largestThumbnail(entry.thumbnails),
+    });
+  }
+  return results;
+}
+
+/** The last HTTPS thumbnail in the list: yt-dlp orders them from smallest to largest. */
+function largestThumbnail(value: unknown): string | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  for (const item of [...(value as unknown[])].reverse()) {
+    if (typeof item === 'object' && item !== null) {
+      const url = (item as Record<string, unknown>).url;
+      if (typeof url === 'string' && url.startsWith('https://')) {
+        return url;
+      }
+    }
+  }
+  return null;
+}
+
 function parseObject(json: string): Record<string, unknown> {
   let parsed: unknown;
   try {

@@ -1,6 +1,6 @@
 {
   "name": "melody-discord-music-bot",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "Melody: музыкальный Discord-бот с очередью, панелью управления и разрешёнными источниками аудио.",
   "license": "UNLICENSED",

@@ -48,6 +48,7 @@ const playback = {
   emptyTimeoutSec: 60,
   defaultVolume: 70,
   skipVotePercent: 0,
+  stayConnected: false,
 };
 
 const handlers = new Map<string, (...args: unknown[]) => void>();

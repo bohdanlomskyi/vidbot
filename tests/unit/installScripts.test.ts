@@ -46,6 +46,26 @@ describe('Windows install scripts', () => {
     }
   });
 
+  it('lets update.cmd find the guide for a ZIP install, which has no source.txt', () => {
+    const readme = read('README.md').toString('utf8');
+    const branch =
+      /raw\.githubusercontent\.com\/bohdanlomskyi\/vidbot\/(\S+?)\/scripts\/windows\/bootstrap\.ps1/u.exec(
+        readme,
+      )?.[1];
+    const update = readFileSync(path.join(WINDOWS, 'update.ps1'), 'utf8');
+
+    expect(branch).toBeDefined();
+    expect(update).toContain(`'${branch ?? ''}'`);
+  });
+
+  it('opens the music folder with a plain ASCII launcher', () => {
+    const content = read('music.cmd');
+
+    expect([...content].every((byte) => byte < 0x80)).toBe(true);
+    expect(hasOnlyCrlf(content)).toBe(true);
+    expect(content.toString('ascii')).toContain('explorer');
+  });
+
   it('downloads the Node.js version pinned in .nvmrc and installs without compiling', () => {
     const common = readFileSync(path.join(WINDOWS, 'common.ps1'), 'utf8');
     expect(common).toContain('.nvmrc');

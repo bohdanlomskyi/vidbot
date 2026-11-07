@@ -1,7 +1,7 @@
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Track } from '../../src/music/models/track.js';
 import {
   YouTubeExperimentalProvider,
@@ -25,12 +25,30 @@ const args = process.argv.slice(2);
 appendFileSync(process.env.FAKE_YTDLP_LOG, JSON.stringify({ pid: process.pid, args }) + '\\n');
 
 const target = args.at(-1) ?? '';
+const searching = target.startsWith('ytsearch');
 const videoId = (/[?&]v=([^&]+)/.exec(target) ?? [])[1] ?? '';
 const streaming = args.includes('-o');
 const fail = (message) => { process.stderr.write('ERROR: ' + message + '\\n'); process.exit(1); };
 process.stdout.on('error', () => process.exit(0));
 
-if (videoId.startsWith('PRIVATE')) fail('[youtube] ' + videoId + ': Private video. Sign in if you have been granted access');
+const metaOf = () => {
+  const live = videoId.startsWith('LIVE');
+  const duration = videoId.startsWith('LONG') ? 7200 : 212;
+  return JSON.stringify({ id: videoId, title: 'Fake ' + videoId, uploader: 'Fake Channel',
+    duration: live ? null : duration, live_status: live ? 'is_live' : 'not_live', is_live: live,
+    availability: 'public', thumbnail: null });
+};
+
+if (searching) {
+  process.stdout.write(JSON.stringify({ _type: 'playlist', entries: [
+    { id: 'SEARCHAAAA1', title: 'Hit one', duration: 141, channel: 'Chan', thumbnails: [{ url: 'https://i.ytimg.com/a.jpg' }] },
+    { id: 'SEARCHLIVE1', title: 'Live now', duration: null, live_status: 'is_live' },
+    { id: 'SEARCHBBBB2', title: 'Hit two', duration: 200, uploader: 'Other' },
+  ] }));
+} else if (streaming && args.includes('--print') && !videoId.startsWith('PRIVATE') && !videoId.startsWith('RATE')) {
+  process.stderr.write(metaOf() + '\\n');
+  createReadStream(process.env.FAKE_YTDLP_AUDIO).pipe(process.stdout);
+} else if (videoId.startsWith('PRIVATE')) fail('[youtube] ' + videoId + ': Private video. Sign in if you have been granted access');
 else if (videoId.startsWith('RATE')) fail('unable to download video data: HTTP Error 429: Too Many Requests');
 else if (videoId.startsWith('SLOW')) setTimeout(() => {}, 60000);
 else if (args.includes('--flat-playlist')) {
@@ -352,6 +370,141 @@ describe.skipIf(process.platform === 'win32')(
 
       expect(outcome).toBe('resolved');
       await playing.close();
+    });
+
+    describe('opening the audio while the link is resolved', () => {
+      async function runsFor(id: string): Promise<Invocation[]> {
+        return (await invocations()).filter((run) => run.args.at(-1)?.endsWith(id) === true);
+      }
+
+      it('uses one yt-dlp run for the lookup and the playback', async () => {
+        const provider = providerWith();
+        const id = 'ONEPROCESS1';
+
+        const [draft] = await provider.resolve(`https://youtu.be/${id}`, {
+          signal: signal(),
+          willPlayNow: true,
+        });
+        const playable = await provider.getPlayableStream(trackFor(id), signal());
+        const bytes = await countBytes(playable.stream);
+        const end = await playable.ended;
+
+        expect(draft).toMatchObject({ title: `Fake ${id}`, durationSec: 212 });
+        expect(end.status).toBe('completed');
+        expect(bytes).toBeGreaterThan(BYTES_PER_SECOND);
+        const runs = await runsFor(id);
+        expect(runs).toHaveLength(1);
+        expect(runs[0]?.args).toContain('--print');
+      });
+
+      it('looks the video up the usual way when the track will not play right away', async () => {
+        const id = 'LATERPLAY01';
+
+        await providerWith().resolve(`https://youtu.be/${id}`, { signal: signal() });
+
+        const runs = await runsFor(id);
+        expect(runs).toHaveLength(1);
+        expect(runs[0]?.args).toContain('--skip-download');
+      });
+
+      it('falls back to a plain lookup when every stream slot is busy', async () => {
+        const provider = providerWith({ maxConcurrency: 1 });
+        const playing = await provider.getPlayableStream(trackFor('AAAAAAAAAAA'), signal());
+        const id = 'BUSYSLOTS01';
+
+        const [draft] = await provider.resolve(`https://youtu.be/${id}`, {
+          signal: signal(),
+          willPlayNow: true,
+        });
+
+        expect(draft?.title).toBe(`Fake ${id}`);
+        expect((await runsFor(id))[0]?.args).toContain('--skip-download');
+        await playing.close();
+      });
+
+      it('refuses a long video and a live broadcast and leaves no process or slot behind', async () => {
+        const provider = providerWith({ maxConcurrency: 1 });
+
+        await expect(
+          provider.resolve('https://youtu.be/LONGVIDEO01', { signal: signal(), willPlayNow: true }),
+        ).rejects.toMatchObject({ code: 'TRACK_TOO_LONG' });
+        await expect(
+          provider.resolve('https://youtu.be/LIVEVIDEO01', { signal: signal(), willPlayNow: true }),
+        ).rejects.toMatchObject({ code: 'SOURCE_UNAVAILABLE' });
+
+        const pids = (await runsFor('LONGVIDEO01')).concat(await runsFor('LIVEVIDEO01'));
+        await vi.waitFor(() => {
+          for (const run of pids) {
+            expect(isProcessRunning(run.pid)).toBe(false);
+          }
+        });
+        // The only slot is free again, so the next link opens its audio at once.
+        const [draft] = await provider.resolve('https://youtu.be/AFTERLONG01', {
+          signal: signal(),
+          willPlayNow: true,
+        });
+        expect(draft).toBeDefined();
+        await provider.dispose();
+      });
+
+      it('closes a prepared stream that nobody plays and frees its slot', async () => {
+        const provider = providerWith({ maxConcurrency: 1, preparedTtlMs: 200 });
+        const id = 'UNUSEDSTRM1';
+
+        await provider.resolve(`https://youtu.be/${id}`, { signal: signal(), willPlayNow: true });
+        const [run] = await runsFor(id);
+
+        await vi.waitFor(() => {
+          expect(isProcessRunning(run?.pid ?? 0)).toBe(false);
+        });
+        const slot = await provider.getPlayableStream(trackFor('AAAAAAAAAAA'), signal());
+        await slot.close();
+      });
+
+      it('reports a private video from the combined run like any other failure', async () => {
+        await expect(
+          providerWith().resolve('https://youtu.be/PRIVATE0001', {
+            signal: signal(),
+            willPlayNow: true,
+          }),
+        ).rejects.toMatchObject({ code: 'SOURCE_UNAVAILABLE' });
+      });
+    });
+
+    describe('search', () => {
+      it('returns playable results with channel and thumbnail and skips live streams', async () => {
+        const results = await providerWith().search('some song', 5, signal());
+
+        expect(results.map((item) => item.id)).toEqual(['SEARCHAAAA1', 'SEARCHBBBB2']);
+        expect(results[0]).toMatchObject({
+          title: 'Hit one',
+          channel: 'Chan',
+          durationSec: 141,
+          thumbnailUrl: 'https://i.ytimg.com/a.jpg',
+        });
+        expect(results[1]?.channel).toBe('Other');
+      });
+
+      it('asks yt-dlp once for a repeated query and treats the text as search text', async () => {
+        const provider = providerWith();
+        const query = `cache check ${String(Date.now())}`;
+
+        await provider.search(query, 5, signal());
+        await provider.search(query.toUpperCase(), 5, signal());
+
+        const runs = (await invocations()).filter(
+          (run) => run.args.at(-1)?.includes(query) === true,
+        );
+        expect(runs).toHaveLength(1);
+        expect(runs[0]?.args.at(-2)).toBe('--');
+        expect(runs[0]?.args.at(-1)).toBe(`ytsearch8:${query}`);
+      });
+
+      it('is refused when the provider is disabled', async () => {
+        await expect(
+          providerWith({ enabled: false }).search('anything', 5, signal()),
+        ).rejects.toMatchObject({ code: 'SOURCE_DISABLED' });
+      });
     });
   },
 );

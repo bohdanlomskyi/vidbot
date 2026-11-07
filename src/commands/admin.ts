@@ -30,6 +30,12 @@ const REQUIRED_PANEL_PERMISSIONS = [
   PermissionFlagsBits.EmbedLinks,
 ];
 
+const ANNOUNCE_TEXT = {
+  all: 'Бот будет писать в чат о каждом действии и событии.',
+  important: 'Бот будет писать в чат только о важном: треки, отключения, ошибки.',
+  off: 'Бот не будет писать в чат о действиях. Панель плеера останется.',
+} as const;
+
 const SOURCE_LABELS: Readonly<Record<SourceKind, string>> = {
   local: 'Библиотека сервера',
   stream: 'Доверенные потоки',
@@ -208,6 +214,23 @@ export async function handleSettings(
           : `Пропуск по голосованию: ${String(percent)} % слушателей.`;
       break;
     }
+    case 'announce': {
+      const raw = interaction.options.getString('mode', true);
+      const mode = raw === 'important' || raw === 'off' ? raw : 'all';
+      patch({ announceMode: mode });
+      message = ANNOUNCE_TEXT[mode];
+      break;
+    }
+    case 'stay-247': {
+      const enabled = interaction.options.getBoolean('enabled', true);
+      patch({ stayConnected: enabled });
+      // Timers are re-evaluated now, so a bot that sits idle starts or stops its countdown at once.
+      await services.engine.handleListenersChanged(guildId);
+      message = enabled
+        ? 'Режим 24/7 включён: бот не покидает канал при простое и пустоте. Выключить: /settings stay-247 enabled:False.'
+        : 'Режим 24/7 выключен: бот снова отключается по таймерам.';
+      break;
+    }
     default:
       throw new AppError('INVALID_INPUT', 'Неизвестная настройка.');
   }
@@ -302,6 +325,17 @@ function settingsEmbed(services: AppServices, guildId: string): EmbedBuilder {
       value: settings.skipVotePercent === 0 ? 'выключено' : `${String(settings.skipVotePercent)} %`,
       inline: true,
     },
+    {
+      name: 'Сообщения в чате',
+      value:
+        settings.announceMode === 'all'
+          ? 'всё'
+          : settings.announceMode === 'important'
+            ? 'только важное'
+            : 'выключены',
+      inline: true,
+    },
+    { name: 'Режим 24/7', value: settings.stayConnected ? 'включён' : 'выключен', inline: true },
     {
       name: 'Источники',
       value: settings.allowedSources.map((kind) => SOURCE_LABELS[kind]).join(', '),
