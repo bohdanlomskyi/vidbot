@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { describeEngineEvent } from '../../../src/app/engineAnnouncements.js';
+import { describeEngineEvent, nowPlayingLine } from '../../../src/app/engineAnnouncements.js';
 import type { EngineEvent } from '../../../src/music/ports.js';
 
 const GUILD = 'g1';
@@ -74,25 +74,44 @@ describe('describeEngineEvent', () => {
     });
   });
 
-  it('leaves a started track to the player panel', () => {
-    const started: EngineEvent = {
+  describe('a started track', () => {
+    const track = {
+      id: 't1',
+      source: 'local' as const,
+      sourceRef: 'x',
+      title: 'Lord *Verity*',
+      artist: null,
+      durationSec: 141,
+      thumbnailUrl: null,
+      originalUrl: null,
+      metadata: {},
+      requesterId: 'u1',
+      createdAt: 0,
+    };
+    const started = (announcedByCaller: boolean): EngineEvent => ({
       type: 'track_started',
       guildId: GUILD,
-      track: {
-        id: 't',
-        source: 'local',
-        sourceRef: 'x',
-        title: 'Song',
-        artist: null,
-        durationSec: 10,
-        thumbnailUrl: null,
-        originalUrl: null,
-        metadata: {},
-        requesterId: 'u',
-        createdAt: 0,
-      },
-    };
+      track,
+      announcedByCaller,
+    });
 
-    expect(describeEngineEvent(started)).toBeNull();
+    it('is announced with its length and who asked for it', () => {
+      expect(describeEngineEvent(started(false))).toEqual({
+        kind: 'important',
+        text: '🎶 Сейчас играет: **Lord \\*Verity\\*** · `2:21` · <@u1>',
+      });
+    });
+
+    it('is not announced when the command that queued it already did', () => {
+      expect(describeEngineEvent(started(true))).toBeNull();
+    });
+
+    it('is not announced again when the same track repeats', () => {
+      expect(describeEngineEvent(started(false), { lastStartedTrackId: 't1' })).toBeNull();
+    });
+  });
+
+  it('formats the now-playing line the same way for commands', () => {
+    expect(nowPlayingLine('Song', null)).toBe('🎶 Сейчас играет: **Song** · `прямой эфир`');
   });
 });

@@ -481,6 +481,10 @@ export class MusicEngine {
       request.playNext === true ? session.queue.enqueueFront(tracks) : session.queue.enqueue(tracks);
 
     const loading = session.current === null ? this.playNext(session) : null;
+    if (loading !== null) {
+      // enqueue() waits for this start and its caller reports it, so the event is not announced twice.
+      loading.announcedByCaller = true;
+    }
     this.afterChange(session);
     return { positions, loading };
   }
@@ -522,6 +526,7 @@ export class MusicEngine {
       finished: false,
       playedMs: 0,
       playingSince: null,
+      announcedByCaller: false,
     };
     session.current = playback;
     session.votes.clear();
@@ -696,7 +701,12 @@ export class MusicEngine {
     playback.started = true;
     playback.playingSince = this.now();
     this.setState(session, 'playing');
-    this.emit({ type: 'track_started', guildId: session.guildId, track: playback.track });
+    this.emit({
+      type: 'track_started',
+      guildId: session.guildId,
+      track: playback.track,
+      announcedByCaller: playback.announcedByCaller,
+    });
     this.afterChange(session);
   }
 

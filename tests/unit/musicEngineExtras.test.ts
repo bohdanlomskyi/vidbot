@@ -45,6 +45,32 @@ describe('MusicEngine extras', () => {
     vi.useRealTimers();
   });
 
+  describe('track_started announcements', () => {
+    it('marks the start a command waits for, and not the tracks that follow on their own', async () => {
+      await harness.engine.enqueue(request(['A', 'B']));
+      await startPlaying(harness);
+      await endTrack(harness);
+
+      const starts = harness.events.flatMap((event) =>
+        event.type === 'track_started' ? [[event.track.title, event.announcedByCaller]] : [],
+      );
+      expect(starts).toEqual([
+        ['A', true],
+        ['B', false],
+      ]);
+    });
+
+    it('does not mark a track added while another one plays', async () => {
+      await harness.engine.enqueue(request(['A']));
+      await startPlaying(harness);
+      await harness.engine.enqueue(request(['B']));
+      await endTrack(harness);
+
+      const last = harness.events.filter((event) => event.type === 'track_started').at(-1);
+      expect(last).toMatchObject({ track: { title: 'B' }, announcedByCaller: false });
+    });
+  });
+
   describe('play next', () => {
     it('puts new tracks at the front of the queue, in their own order', async () => {
       await harness.engine.enqueue(request(['A', 'B', 'C']));

@@ -10,6 +10,7 @@ interface Setup {
   readonly send: ReturnType<typeof vi.fn>;
   readonly warn: ReturnType<typeof vi.fn>;
   readonly advance: (ms: number) => void;
+  readonly posted: unknown[];
 }
 
 function setup(
@@ -21,12 +22,15 @@ function setup(
   } = {},
 ): Setup {
   const send = vi.fn(() =>
-    options.sendFails === true ? Promise.reject(new Error('Missing Access')) : Promise.resolve({}),
+    options.sendFails === true
+      ? Promise.reject(new Error('Missing Access'))
+      : Promise.resolve({ id: '700000000000000000' }),
   );
   const channel = { isTextBased: () => true, send };
   const warn = vi.fn();
   const follower = new ChannelFollower();
   let now = 1_000_000;
+  const posted: unknown[] = [];
   const announcer = new Announcer({
     client: {
       channels: {
@@ -51,6 +55,9 @@ function setup(
     follower,
     logger: { warn },
     now: () => now,
+    onPosted: (guildId, channelId, messageId) => {
+      posted.push({ guildId, channelId, messageId });
+    },
   });
   return {
     announcer,
@@ -60,6 +67,7 @@ function setup(
     advance: (ms) => {
       now += ms;
     },
+    posted,
   };
 }
 
@@ -144,5 +152,25 @@ describe('Announcer', () => {
     follower.set('g1', 'chat-1');
 
     await expect(announcer.say('g1', 'important', 'x')).resolves.toBe(false);
+  });
+
+  it('tells who listens where its message went, so the player panel can move below it', async () => {
+    const { announcer, follower, posted } = setup();
+    follower.set('g1', 'chat-1');
+
+    await announcer.post('g1', 'Пауза');
+
+    expect(posted).toEqual([
+      { guildId: 'g1', channelId: 'chat-1', messageId: '700000000000000000' },
+    ]);
+  });
+
+  it('reports nothing when the message could not be sent', async () => {
+    const { announcer, follower, posted } = setup({ sendFails: true });
+    follower.set('g1', 'chat-1');
+
+    await announcer.post('g1', 'Пауза');
+
+    expect(posted).toEqual([]);
   });
 });

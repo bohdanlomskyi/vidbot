@@ -121,9 +121,20 @@ export async function createApp(config: AppConfig, logger: Logger): Promise<App>
   const opusEncoder = await OpusWorkerEncoder.start(logger);
   const client: Client = createClient();
   const follower = new ChannelFollower();
-  const announcer = new Announcer({ client, settings, follower, logger });
   // The panel needs the engine, and the engine notifies the panel. The holder breaks that cycle.
   const panelHolder: { panel?: PanelManager } = {};
+  const announcer = new Announcer({
+    client,
+    settings,
+    follower,
+    logger,
+    onPosted: (guildId, channelId, messageId) => {
+      // The player panel moves below every message the bot writes.
+      panelHolder.panel?.notePosted(guildId, channelId, messageId);
+    },
+  });
+  /** The track whose start was announced last, per guild, so a repeating track is not announced again. */
+  const lastStarted = new Map<string, string>();
   const engine = new MusicEngine({
     voice: new DiscordVoicePort(client, logger),
     createPlayer: () => new DiscordAudioPlayer(opusEncoder),
@@ -135,11 +146,14 @@ export async function createApp(config: AppConfig, logger: Logger): Promise<App>
     },
     onEvent: (event) => {
       handleEngineEvent(event, { history, logger, now: () => Date.now() });
+      const note = describeEngineEvent(event, {
+        lastStartedTrackId: lastStarted.get(event.guildId) ?? null,
+      });
       if (event.type === 'track_started') {
-        // The panel moves to the bottom of the chat, under the message about the new track.
-        panelHolder.panel?.requestRepost(event.guildId);
+        lastStarted.set(event.guildId, event.track.id);
+      } else if (event.type === 'left_channel') {
+        lastStarted.delete(event.guildId);
       }
-      const note = describeEngineEvent(event);
       if (note !== null) {
         void announcer.say(event.guildId, note.kind, note.text);
       }

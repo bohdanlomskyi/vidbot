@@ -1,15 +1,22 @@
-import { Client, Events, GatewayIntentBits, type VoiceState } from 'discord.js';
+import { Client, Events, GatewayIntentBits, Options, type VoiceState } from 'discord.js';
 import type { AppServices } from '../commands/context.js';
 import { routeInteraction } from '../interactions/router.js';
 
 /**
- * The Discord client asks for two non-privileged intents only: guild metadata and voice
- * states. It does not request the message content intent or member presence, and it never
- * reads messages, so it cannot see what people type outside commands.
+ * The Discord client asks for non-privileged intents only: guild metadata, voice states, and
+ * guild message events. It does not request the message content intent, members or presences,
+ * so it never receives what people type outside commands. Message events are used for one
+ * thing: knowing which message in a channel is the newest, so the player panel can stay at the
+ * bottom of the chat. No message is kept in memory.
  */
 export function createClient(): Client {
   return new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildVoiceStates,
+      GatewayIntentBits.GuildMessages,
+    ],
+    makeCache: Options.cacheWithLimits({ ...Options.DefaultMakeCacheSettings, MessageManager: 0 }),
     allowedMentions: { parse: [] },
   });
 }

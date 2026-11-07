@@ -186,7 +186,7 @@ export const PLAYBACK_COMMANDS: Readonly<Record<string, ChatHandler>> = {
       );
     }
     if (services.sources.wantsSearch(source, services.settings.get(ctx.guildId).allowedSources)) {
-      await showSearch(ctx, interaction, source, playNext);
+      await showSearch(ctx, source, playNext);
       return;
     }
     await startPlayback(ctx, source, { playNext });
@@ -233,10 +233,9 @@ export const PLAYBACK_COMMANDS: Readonly<Record<string, ChatHandler>> = {
         .setLabel('Отмена')
         .setStyle(ButtonStyle.Secondary),
     );
-    await interaction.editReply({
+    await ctx.reply({
       content: `Найдено треков: ${String(drafts.length)}. Добавить их в очередь?`,
       components: [row],
-      allowedMentions: { parse: [] },
     });
   },
 

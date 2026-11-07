@@ -1,4 +1,10 @@
-import { type Client, Events, GatewayIntentBits, IntentsBitField } from 'discord.js';
+import {
+  type Client,
+  Events,
+  GatewayIntentBits,
+  IntentsBitField,
+  MessageManager,
+} from 'discord.js';
 import { describe, expect, it, vi } from 'vitest';
 import type { AppServices } from '../../../src/commands/context.js';
 import { createClient, wireClient } from '../../../src/discord/bot.js';
@@ -55,16 +61,29 @@ function flush(): Promise<void> {
 }
 
 describe('createClient', () => {
-  it('requests only the guild and voice-state intents', () => {
+  it('requests no privileged intent: message text, members and presences stay unknown', () => {
     const client = createClient();
     const intents = new IntentsBitField(client.options.intents);
 
     expect(intents.has(GatewayIntentBits.Guilds)).toBe(true);
     expect(intents.has(GatewayIntentBits.GuildVoiceStates)).toBe(true);
+    // Only to know which message is the newest, so the player panel can stay at the bottom.
+    expect(intents.has(GatewayIntentBits.GuildMessages)).toBe(true);
     expect(intents.has(GatewayIntentBits.MessageContent)).toBe(false);
     expect(intents.has(GatewayIntentBits.GuildMembers)).toBe(false);
     expect(intents.has(GatewayIntentBits.GuildPresences)).toBe(false);
-    expect(intents.has(GatewayIntentBits.GuildMessages)).toBe(false);
+  });
+
+  it('keeps no chat messages in memory', () => {
+    const client = createClient();
+    const channel = { id: '1' };
+    const cache = client.options.makeCache?.(
+      MessageManager as never,
+      {} as never,
+      channel as never,
+    ) as unknown as { maxSize?: number } | undefined;
+
+    expect(cache?.maxSize).toBe(0);
   });
 });
 

@@ -37,7 +37,10 @@ describe('handleEngineEvent', () => {
   it('records a started track with its source, reference, requester and start time', () => {
     const d = deps();
 
-    handleEngineEvent({ type: 'track_started', guildId: 'guild-1', track: track() }, d);
+    handleEngineEvent(
+      { type: 'track_started', guildId: 'guild-1', track: track(), announcedByCaller: false },
+      d,
+    );
 
     expect(d.history.add).toHaveBeenCalledWith('guild-1', {
       title: 'Song',
@@ -53,7 +56,10 @@ describe('handleEngineEvent', () => {
     const d = deps({ historyFails: true });
 
     expect(() => {
-      handleEngineEvent({ type: 'track_started', guildId: 'guild-1', track: track() }, d);
+      handleEngineEvent(
+        { type: 'track_started', guildId: 'guild-1', track: track(), announcedByCaller: false },
+        d,
+      );
     }).not.toThrow();
     expect(d.logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ guildId: 'guild-1' }),

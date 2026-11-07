@@ -65,7 +65,13 @@ export type ListenerCounter = (guildId: string, channelId: string) => number;
 export type SettingsSource = (guildId: string) => GuildPlaybackSettings;
 
 export type EngineEvent =
-  | { readonly type: 'track_started'; readonly guildId: string; readonly track: Track }
+  | {
+      readonly type: 'track_started';
+      readonly guildId: string;
+      readonly track: Track;
+      /** The command that queued the track waits for its start and reports it itself. */
+      readonly announcedByCaller: boolean;
+    }
   | {
       readonly type: 'track_failed';
       readonly guildId: string;

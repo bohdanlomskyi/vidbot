@@ -1,9 +1,8 @@
-import {
-  MessageFlags,
-  type ButtonInteraction,
-  type ChatInputCommandInteraction,
-  type Guild,
-  type GuildMember,
+import type {
+  ButtonInteraction,
+  ChatInputCommandInteraction,
+  Guild,
+  GuildMember,
 } from 'discord.js';
 import { assertAllowed, accessContextFor, actorFromMember, decide } from '../discord/access.js';
 import type { AnnounceKind } from '../discord/announcer.js';
@@ -13,13 +12,8 @@ import type { TrackDraft } from '../music/models/track.js';
 import type { AccessAction, AccessDecision } from '../security/accessPolicy.js';
 import { AppError } from '../utils/errors.js';
 import { describeEnqueue } from './enqueueReply.js';
-import {
-  assertBotCanUse,
-  deferEphemeral,
-  requireGuildMember,
-  sayEphemeral,
-  type AppServices,
-} from './context.js';
+import { assertBotCanUse, requireGuildMember, type AppServices } from './context.js';
+import { Responder, type PrivatePayload } from './responder.js';
 
 /** Everything an action needs: the services, the guild, the member, and ways to answer. */
 export interface ActionContext {
@@ -27,47 +21,48 @@ export interface ActionContext {
   readonly guild: Guild;
   readonly member: GuildMember;
   readonly guildId: string;
-  /** A private answer that only the member sees. */
-  readonly reply: (content: string) => Promise<void>;
-  /**
-   * A message everybody in the chat sees. The member's private placeholder is removed when it
-   * goes out. Returns false when the message could not be sent, so the caller can answer privately.
-   */
+  /** A private answer that only the member sees. A later call replaces an earlier one. */
+  readonly reply: (payload: PrivatePayload) => Promise<void>;
+  /** A message everybody in the chat sees. False when it could not be sent. */
   readonly publish: (content: string) => Promise<boolean>;
+  /** Nothing to tell: the interaction is closed without leaving a message. */
+  readonly dismiss: () => Promise<void>;
 }
 
-/** A slash command: the answer is private until it succeeds, then it becomes a public message. */
+/**
+ * A slash command. A quick action is answered with one public or private reply. A slow one
+ * gets a private placeholder first, and its public result goes to the chat as a normal message.
+ */
 export async function chatContext(
   interaction: ChatInputCommandInteraction,
   services: AppServices,
 ): Promise<ActionContext> {
-  await deferEphemeral(interaction);
-  const { guild, member, guildId } = await requireGuildMember(interaction);
-  followChannel(services, guildId, interaction.channelId);
-  return {
-    services,
-    guild,
-    member,
-    guildId,
-    reply: (content) => sayEphemeral(interaction, content),
-    publish: async (content) => {
-      try {
-        await interaction.followUp({ content, allowedMentions: { parse: [] } });
-      } catch {
-        return false;
-      }
-      await interaction.deleteReply().catch(() => undefined);
-      return true;
-    },
-  };
+  return interactiveContext(interaction, services, 'command');
 }
 
-/** A button on the player panel. The panel message itself must stay, so nothing is deleted. */
+/** A button on the player panel. A quick action is answered with one public reply under it. */
 export async function buttonContext(
   interaction: ButtonInteraction,
   services: AppServices,
 ): Promise<ActionContext> {
-  await interaction.deferUpdate();
+  return interactiveContext(interaction, services, 'component');
+}
+
+async function interactiveContext(
+  interaction: ChatInputCommandInteraction | ButtonInteraction,
+  services: AppServices,
+  kind: 'command' | 'component',
+): Promise<ActionContext> {
+  const guildKey = interaction.guildId ?? '';
+  // Created first, so its timer counts from when the interaction arrived.
+  const responder = new Responder(interaction, {
+    kind,
+    postToChat: (text) => services.announcer.post(guildKey, text),
+    chatChannelId: () => services.announcer.channelFor(guildKey),
+    onPublicMessage: (message) => {
+      services.panel.notePosted(guildKey, message.channelId, message.messageId);
+    },
+  });
   const { guild, member, guildId } = await requireGuildMember(interaction);
   followChannel(services, guildId, interaction.channelId);
   return {
@@ -75,18 +70,16 @@ export async function buttonContext(
     guild,
     member,
     guildId,
-    reply: async (content) => {
-      await interaction.followUp({
-        content,
-        flags: MessageFlags.Ephemeral,
-        allowedMentions: { parse: [] },
-      });
-    },
-    publish: (content) => services.announcer.post(guildId, content),
+    reply: (payload) => responder.private(payload),
+    publish: (content) => responder.publish(content),
+    dismiss: () => responder.dismiss(),
   };
 }
 
-/** A button on a private message, such as the search results. The message is replaced by the outcome. */
+/**
+ * A button on a private message that the handler already acknowledged, such as the search
+ * results. The message is replaced by the outcome, or removed when the outcome went to the chat.
+ */
 export async function privateButtonContext(
   interaction: ButtonInteraction,
   services: AppServices,
@@ -98,11 +91,12 @@ export async function privateButtonContext(
     guild,
     member,
     guildId,
-    reply: async (content) => {
+    reply: async (payload) => {
       await interaction.editReply({
-        content,
+        content: '',
         embeds: [],
         components: [],
+        ...(typeof payload === 'string' ? { content: payload } : payload),
         allowedMentions: { parse: [] },
       });
     },
@@ -112,6 +106,9 @@ export async function privateButtonContext(
       }
       await interaction.deleteReply().catch(() => undefined);
       return true;
+    },
+    dismiss: async () => {
+      await interaction.deleteReply().catch(() => undefined);
     },
   };
 }
@@ -196,10 +193,7 @@ export async function enqueueDrafts(
     tracks: drafts,
     playNext: options.playNext,
   });
-  const text = describeEnqueue(
-    drafts.map((item) => item.title),
-    result,
-  );
+  const text = describeEnqueue(drafts, result);
   if (result.failure !== null) {
     // The engine also reports the failed track to the chat; this tells the member who asked.
     await ctx.reply(text);

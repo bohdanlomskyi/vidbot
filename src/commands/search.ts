@@ -21,7 +21,6 @@ const MAX_QUERY_LENGTH = 200;
  */
 export async function showSearch(
   ctx: ActionContext,
-  interaction: ChatInputCommandInteraction,
   query: string,
   playNext: boolean,
 ): Promise<void> {
@@ -55,12 +54,7 @@ export async function showSearch(
     playNext,
   });
   const picker = buildSearchPicker(query, drafts, token);
-  await interaction.editReply({
-    content: '',
-    embeds: picker.embeds,
-    components: picker.components,
-    allowedMentions: { parse: [] },
-  });
+  await ctx.reply({ embeds: picker.embeds, components: picker.components });
 }
 
 /** `/search`: the same list as /play with plain text, whatever the library holds. */
@@ -73,7 +67,7 @@ export async function handleSearchCommand(
   if (query === '') {
     throw new AppError('INVALID_INPUT', 'Введите, что искать.');
   }
-  await showSearch(ctx, interaction, query, false);
+  await showSearch(ctx, query, false);
 }
 
 /** A number or the cancel button on a results list. */
@@ -103,10 +97,6 @@ export async function handleSearchButton(
   }
   // Without this, the buttons would sit there while the track loads, and a second click would queue it twice.
   services.pendingSearches.remove(token);
-  await interaction.editReply({
-    content: `⏳ Загружаю «${truncate(draft.title, 80)}»…`,
-    embeds: [],
-    components: [],
-  });
+  await ctx.reply(`⏳ Загружаю «${truncate(draft.title, 80)}»…`);
   await enqueueDrafts(ctx, [draft], { playNext: pending.playNext === true });
 }

@@ -156,30 +156,44 @@ describe('PanelManager', () => {
   });
 
   describe('following the channel of the latest command', () => {
-    function channelNamed(id: string, sentIds: string[]) {
+    function channelNamed(id: string, sentIds: string[], order: string[]) {
       return {
         id,
         guildId: 'guild-1',
+        lastMessageId: null as string | null,
         isTextBased: () => true,
         isDMBased: () => false,
         send: vi.fn(() => {
-          const messageId = `m-${id}-${String(sentIds.length)}`;
+          // Message ids are snowflakes: a later message has a larger id.
+          const messageId = String(500_000_000_000_000_000n + BigInt(sentIds.length * 10));
           sentIds.push(messageId);
+          order.push(`send ${messageId}`);
           return Promise.resolve({ id: messageId });
         }),
-        messages: { edit: vi.fn(() => Promise.resolve()), delete: vi.fn(() => Promise.resolve()) },
+        messages: {
+          edit: vi.fn(() => Promise.resolve()),
+          delete: vi.fn((messageId: string) => {
+            order.push(`delete ${messageId}`);
+            return Promise.resolve();
+          }),
+        },
       };
     }
 
-    function followed() {
+    function followed(fixedChannel = false) {
       const sent: string[] = [];
-      const first = channelNamed('100000000000000001', sent);
-      const second = channelNamed('100000000000000002', sent);
+      const order: string[] = [];
+      const first = channelNamed('100000000000000001', sent, order);
+      const second = channelNamed('100000000000000002', sent, order);
+      const stored = {
+        textChannelId: fixedChannel ? first.id : null,
+        panelMessageId: null as string | null,
+      };
       const settings = {
-        get: vi.fn(
-          () => ({ textChannelId: null, panelMessageId: null }) as unknown as GuildSettings,
-        ),
-        setPanel: vi.fn(),
+        get: vi.fn(() => ({ ...stored }) as unknown as GuildSettings),
+        setPanel: vi.fn((_guildId: string, _channelId: string, messageId: string) => {
+          stored.panelMessageId = messageId;
+        }),
         clearPanelMessage: vi.fn(),
       };
       let volume = 70;
@@ -216,6 +230,8 @@ describe('PanelManager', () => {
         first,
         second,
         settings,
+        sent,
+        order,
         setVolume: (value: number) => {
           volume = value;
         },
@@ -272,6 +288,92 @@ describe('PanelManager', () => {
       expect(first.messages.delete).toHaveBeenCalledTimes(1);
       expect(first.send).toHaveBeenCalledTimes(2);
       expect(first.messages.edit).not.toHaveBeenCalled();
+    });
+
+    it('moves under every new bot message: the new panel is sent first, then the old one deleted', async () => {
+      const { panel, first, sent, order } = followed();
+      panel.follow('guild-1', first.id);
+      panel.requestRefresh('guild-1');
+      await wait(20);
+      const oldPanel = sent[0] ?? '';
+
+      panel.notePosted('guild-1', first.id, '500000000000000005');
+      await wait(20);
+
+      expect(order).toEqual([`send ${oldPanel}`, `send ${sent[1] ?? ''}`, `delete ${oldPanel}`]);
+      expect(first.messages.edit).not.toHaveBeenCalled();
+    });
+
+    it('stays where it is for a bot message in another channel', async () => {
+      const { panel, first, second } = followed();
+      panel.follow('guild-1', first.id);
+      panel.requestRefresh('guild-1');
+      await wait(20);
+
+      panel.notePosted('guild-1', second.id, '500000000000000005');
+      await wait(20);
+
+      expect(first.send).toHaveBeenCalledTimes(1);
+      expect(first.messages.delete).not.toHaveBeenCalled();
+    });
+
+    it('edits in place while it is still the newest message in the chat', async () => {
+      const { panel, first, sent, setVolume } = followed();
+      panel.follow('guild-1', first.id);
+      panel.requestRefresh('guild-1');
+      await wait(20);
+      first.lastMessageId = sent[0] ?? null;
+
+      setVolume(30);
+      panel.requestRefresh('guild-1');
+      await wait(20);
+
+      expect(first.send).toHaveBeenCalledTimes(1);
+      expect(first.messages.edit).toHaveBeenCalledTimes(1);
+    });
+
+    it('comes back down under messages from people when what it shows changes, not before', async () => {
+      const { panel, first, setVolume } = followed();
+      panel.follow('guild-1', first.id);
+      panel.requestRefresh('guild-1');
+      await wait(20);
+      first.lastMessageId = '600000000000000000';
+
+      panel.requestRefresh('guild-1');
+      await wait(20);
+      expect(first.send).toHaveBeenCalledTimes(1);
+
+      setVolume(30);
+      panel.requestRefresh('guild-1');
+      await wait(20);
+      expect(first.send).toHaveBeenCalledTimes(2);
+      expect(first.messages.delete).toHaveBeenCalledTimes(1);
+      expect(first.messages.edit).not.toHaveBeenCalled();
+    });
+
+    it('moves a panel fixed by /setup too, and remembers its new message', async () => {
+      const { panel, first, settings, sent } = followed(true);
+      panel.requestRefresh('guild-1');
+      await wait(20);
+
+      panel.notePosted('guild-1', first.id, '500000000000000005');
+      await wait(20);
+
+      expect(first.send).toHaveBeenCalledTimes(2);
+      expect(settings.setPanel).toHaveBeenLastCalledWith('guild-1', first.id, sent[1]);
+      expect(first.messages.delete).toHaveBeenCalledWith(sent[0]);
+    });
+
+    it('ignores a noted message older than the panel', async () => {
+      const { panel, first } = followed();
+      panel.follow('guild-1', first.id);
+      panel.requestRefresh('guild-1');
+      await wait(20);
+
+      panel.notePosted('guild-1', first.id, '400000000000000000');
+      await wait(20);
+
+      expect(first.send).toHaveBeenCalledTimes(1);
     });
   });
 });

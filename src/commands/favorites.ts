@@ -64,7 +64,7 @@ export async function handleFavorites(
         .setTitle(`⭐ Ваше избранное · ${String(entries.length)}`)
         .setDescription(lines.join('\n'))
         .setFooter({ text: '/favorites play — включить, /favorites remove — убрать' });
-      await interaction.editReply({ embeds: [embed], allowedMentions: { parse: [] } });
+      await ctx.reply({ embeds: [embed] });
       return;
     }
 

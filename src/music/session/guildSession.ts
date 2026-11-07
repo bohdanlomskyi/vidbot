@@ -27,6 +27,8 @@ export interface CurrentPlayback {
   /** Milliseconds of audible playback accumulated before the latest pause. */
   playedMs: number;
   playingSince: number | null;
+  /** True when a command waits for this start and tells the chat about it itself. */
+  announcedByCaller: boolean;
 }
 
 /**

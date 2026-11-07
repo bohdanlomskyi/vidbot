@@ -12,6 +12,7 @@ import {
   handleSourcesSelect,
 } from '../commands/admin.js';
 import type { AppServices } from '../commands/context.js';
+import { responderFor } from '../commands/responder.js';
 import { handleFavorites } from '../commands/favorites.js';
 import { handleHelp, handleStatus } from '../commands/info.js';
 import {
@@ -227,6 +228,12 @@ async function reportFailure(
     return;
   }
   try {
+    const responder = responderFor(interaction);
+    if (responder !== undefined) {
+      // It knows what was already sent, and waits for a placeholder that is still on its way.
+      await responder.private(text);
+      return;
+    }
     if (interaction.isChatInputCommand() && interaction.deferred) {
       await interaction.editReply({ content: text, embeds: [], components: [] });
       return;

@@ -16,6 +16,8 @@ export interface AnnouncerOptions {
   readonly follower: ChannelFollower;
   readonly logger: Pick<Logger, 'warn'>;
   readonly now?: () => number;
+  /** Called after a message was sent, with where it went. */
+  readonly onPosted?: (guildId: string, channelId: string, messageId: string) => void;
 }
 
 export function modeAllows(mode: AnnounceMode, kind: AnnounceKind): boolean {
@@ -72,11 +74,12 @@ export class Announcer {
       if (channel === null || !channel.isTextBased() || !('send' in channel)) {
         return false;
       }
-      await channel.send({
+      const message = await channel.send({
         content: truncate(text, MAX_LENGTH),
         allowedMentions: { parse: [] },
         flags: MessageFlags.SuppressNotifications,
       });
+      this.options.onPosted?.(guildId, channelId, message.id);
       return true;
     } catch (error) {
       this.options.logger.warn({ guildId, err: error }, 'Could not write to the chat');

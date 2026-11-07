@@ -1,18 +1,31 @@
 import type { EngineEvent } from '../music/ports.js';
 import type { AnnounceKind } from '../discord/announcer.js';
-import { chatTitle } from '../utils/format.js';
+import { chatTitle, formatDuration } from '../utils/format.js';
 
 export interface Announcement {
   readonly kind: AnnounceKind;
   readonly text: string;
 }
 
+export interface AnnouncementContext {
+  /** The track whose start was announced last in this server, to stay quiet when it repeats. */
+  readonly lastStartedTrackId?: string | null;
+}
+
+/** The line that tells the chat which track plays now. Commands use it too. */
+export function nowPlayingLine(title: string, durationSec: number | null): string {
+  return `🎶 Сейчас играет: **${chatTitle(title)}** · \`${formatDuration(durationSec)}\``;
+}
+
 /**
  * What the chat is told about an engine event. Events caused by a command (stop, leave) return
- * null, because the command already announced itself. A started track is shown by the player
- * panel, not by a message.
+ * null, because the command already announced itself. A started track is announced with a short
+ * message, unless the command that queued it reports the start itself or the track repeats.
  */
-export function describeEngineEvent(event: EngineEvent): Announcement | null {
+export function describeEngineEvent(
+  event: EngineEvent,
+  context: AnnouncementContext = {},
+): Announcement | null {
   switch (event.type) {
     case 'track_failed':
       return {
@@ -58,6 +71,12 @@ export function describeEngineEvent(event: EngineEvent): Announcement | null {
     case 'moved':
       return { kind: 'important', text: `↔️ Меня переместили в канал <#${event.channelId}>.` };
     case 'track_started':
-      return null;
+      if (event.announcedByCaller || event.track.id === context.lastStartedTrackId) {
+        return null;
+      }
+      return {
+        kind: 'important',
+        text: `${nowPlayingLine(event.track.title, event.track.durationSec)} · <@${event.track.requesterId}>`,
+      };
   }
 }

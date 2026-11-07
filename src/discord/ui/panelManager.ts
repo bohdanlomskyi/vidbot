@@ -10,7 +10,8 @@ const UNKNOWN_MESSAGE = 10_008;
 const UNKNOWN_CHANNEL = 10_003;
 const MISSING_ACCESS = 50_001;
 const MISSING_PERMISSIONS = 50_013;
-const REFRESH_DELAY_MS = 1_000;
+/** Changes that arrive together (a track starts, its message is posted) become one update. */
+const REFRESH_DELAY_MS = 250;
 
 export interface PanelManagerOptions {
   readonly client: Client;
@@ -31,12 +32,18 @@ interface Target {
 }
 
 /**
- * Keeps one main panel message per guild and updates it in place. Refreshes are coalesced
- * per guild and run one at a time, so two refreshes can never both create a message. An
- * edit is skipped when nothing shown on the panel changed. A deleted message is recreated,
- * and a missing channel or access problem is logged once instead of being retried in a loop.
- * With a channel fixed by /setup the panel stays there. Otherwise it follows the channel of the
- * latest command, and moves to the bottom of the chat when a new track starts.
+ * Keeps one player panel per guild, always under the bot's latest message. Refreshes are
+ * coalesced per guild and run one at a time, so two refreshes can never both create a message.
+ *
+ * - After every message the bot writes into the panel's channel, the panel is sent again below
+ *   it: the new panel first, then the old one is deleted, so the chat is never without one.
+ * - When what the panel shows changes and people have written since, it also comes back down.
+ *   While it is still the newest message, it is edited in place, which is one call instead of two.
+ * - An edit is skipped when nothing shown on the panel changed.
+ *
+ * The panel lives in the channel fixed by /setup, or else in the channel of the latest command.
+ * A deleted message is recreated, and a missing channel or access problem is logged once
+ * instead of being retried in a loop.
  */
 export class PanelManager {
   private readonly pending = new Map<string, ReturnType<typeof setTimeout>>();
@@ -47,8 +54,10 @@ export class PanelManager {
   private readonly shown = new Map<string, string>();
   /** Panels that follow commands: the message each guild's panel is in now. Not persisted. */
   private readonly followed = new Map<string, { channelId: string; messageId: string }>();
-  /** Guilds whose followed panel must be sent again, at the bottom of the chat. */
+  /** Guilds whose panel must be sent again, at the bottom of the chat. */
   private readonly reposts = new Set<string>();
+  /** The newest message the bot wrote into each guild's panel channel, besides the panel itself. */
+  private readonly newestBotMessage = new Map<string, { channelId: string; messageId: string }>();
   private readonly follower: ChannelFollower;
   private readonly delay: number;
   private disposed = false;
@@ -63,9 +72,19 @@ export class PanelManager {
     this.follower.set(guildId, channelId);
   }
 
-  /** Sends the followed panel again, so it sits under the newest messages. */
+  /** Sends the panel again, so it sits under the newest messages. */
   requestRepost(guildId: string): void {
     this.reposts.add(guildId);
+    this.requestRefresh(guildId);
+  }
+
+  /** The bot wrote a message. When it is in the panel's channel, the panel moves below it. */
+  notePosted(guildId: string, channelId: string, messageId: string): void {
+    const known = this.newestBotMessage.get(guildId);
+    if (known?.channelId === channelId && !isNewer(messageId, known.messageId)) {
+      return;
+    }
+    this.newestBotMessage.set(guildId, { channelId, messageId });
     this.requestRefresh(guildId);
   }
 
@@ -78,6 +97,7 @@ export class PanelManager {
     this.pending.clear();
     this.rerun.clear();
     this.reposts.clear();
+    this.newestBotMessage.clear();
   }
 
   requestRefresh(guildId: string): void {
@@ -133,24 +153,25 @@ export class PanelManager {
       return;
     }
     const snapshot = this.options.engine.snapshot(guildId);
-    const repostWanted = this.reposts.delete(guildId);
-    const repost = !target.fixed && repostWanted;
-    let messageId = target.messageId;
+    const forced = this.reposts.delete(guildId);
     const moved = !target.fixed && this.followed.get(guildId)?.channelId !== target.channelId;
-    if (
-      !repost &&
-      !moved &&
-      messageId !== null &&
-      this.shown.get(guildId) === shownKey(messageId, snapshot)
-    ) {
+    let messageId = target.messageId;
+    const changed = messageId === null || this.shown.get(guildId) !== shownKey(messageId, snapshot);
+    const botWroteBelow =
+      messageId !== null && this.botWroteAfter(guildId, target.channelId, messageId);
+    if (!forced && !moved && !changed && !botWroteBelow) {
       return;
     }
     const channel = await this.resolveChannel(guildId, target.channelId);
     if (channel === null) {
       return;
     }
+    const peopleWroteBelow =
+      messageId !== null &&
+      channel.lastMessageId != null &&
+      isNewer(channel.lastMessageId, messageId);
 
-    if (!target.fixed && (repost || moved)) {
+    if (moved) {
       await this.deleteFollowed(guildId);
       messageId = null;
     }
@@ -160,7 +181,9 @@ export class PanelManager {
       allowedMentions: { parse: [] as [] },
     };
 
-    if (messageId !== null) {
+    // Edited in place only while it is still at the bottom; otherwise it is sent again below.
+    const stayInPlace = !forced && !botWroteBelow && !peopleWroteBelow;
+    if (messageId !== null && stayInPlace) {
       try {
         await channel.messages.edit(messageId, payload);
         this.shown.set(guildId, shownKey(messageId, snapshot));
@@ -172,6 +195,7 @@ export class PanelManager {
           return;
         }
         // The message was deleted. Fall through and create a new one.
+        messageId = null;
       }
     }
 
@@ -185,7 +209,18 @@ export class PanelManager {
       this.shown.set(guildId, shownKey(message.id, snapshot));
     } catch (error) {
       this.reportFailure(guildId, error);
+      return;
     }
+    if (messageId !== null) {
+      // The old panel goes only once the new one is there.
+      await channel.messages.delete(messageId).catch(() => undefined);
+    }
+  }
+
+  /** True when the bot wrote a message into the panel's channel after the panel message. */
+  private botWroteAfter(guildId: string, channelId: string, panelMessageId: string): boolean {
+    const newest = this.newestBotMessage.get(guildId);
+    return newest?.channelId === channelId && isNewer(newest.messageId, panelMessageId);
   }
 
   private targetFor(
@@ -263,6 +298,14 @@ export class PanelManager {
     }
     this.options.logger.error({ guildId, err: error }, 'Panel update failed');
   }
+}
+
+/** Message ids are snowflakes, which grow with time. Ids that are not numbers compare as not newer. */
+export function isNewer(candidate: string, than: string): boolean {
+  if (!/^\d{1,20}$/u.test(candidate) || !/^\d{1,20}$/u.test(than)) {
+    return false;
+  }
+  return BigInt(candidate) > BigInt(than);
 }
 
 function isDiscordError(error: unknown, code: number): boolean {
