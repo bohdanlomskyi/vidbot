@@ -173,4 +173,15 @@ describe('Announcer', () => {
 
     expect(posted).toEqual([]);
   });
+
+  it('writes into a given channel when asked, whatever channel the bot follows', async () => {
+    const { announcer, follower, posted } = setup();
+    follower.set('g1', 'chat-1');
+
+    expect(await announcer.postTo('g1', 'fixed-1', '⏭ Пропущено.')).toBe(true);
+
+    expect(posted).toEqual([
+      { guildId: 'g1', channelId: 'fixed-1', messageId: '700000000000000000' },
+    ]);
+  });
 });

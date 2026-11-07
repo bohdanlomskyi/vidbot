@@ -44,8 +44,9 @@ export interface AudioProvider {
   getPlayableStream(track: Track, signal: AbortSignal, startSec?: number): Promise<PlayableSource>;
   /**
    * Optional. Starts opening a track that will play soon, so the later getPlayableStream is
-   * fast. Best effort: it never throws, and a provider may decline (no free slot, disabled).
+   * fast. Best effort: it never throws. Returns false when it declined for now (no free slot,
+   * provider off), so the caller may ask again later; true when the track is being opened.
    */
-  preload?(track: Track): void;
+  preload?(track: Track): boolean;
   dispose(): Promise<void>;
 }

@@ -500,7 +500,7 @@ describe.skipIf(process.platform === 'win32')(
         const playing = await provider.getPlayableStream(trackFor('AAAAAAAAAAA'), signal());
         const id = 'NOSLOTPRE01';
 
-        provider.preload(trackFor(id));
+        expect(provider.preload(trackFor(id))).toBe(false);
         await new Promise((resolve) => setTimeout(resolve, 100));
 
         expect(await runsFor(id)).toHaveLength(0);
@@ -522,6 +522,28 @@ describe.skipIf(process.platform === 'win32')(
         });
         const slot = await provider.getPlayableStream(trackFor('AAAAAAAAAAA'), signal());
         await slot.close();
+      });
+
+      it('gives up an early-opened track when a requested one needs its slot', async () => {
+        const provider = providerWith({ maxConcurrency: 2 });
+        const playing = await provider.getPlayableStream(trackFor('AAAAAAAAAAA'), signal());
+        expect(provider.preload(trackFor('SPECULATE01'))).toBe(true);
+        await vi.waitFor(async () => {
+          expect(await runsFor('SPECULATE01')).toHaveLength(1);
+        });
+
+        // Without giving the slot up, this would wait until the playing track ends.
+        const requested = await provider.getPlayableStream(
+          trackFor('REQUESTED01'),
+          AbortSignal.timeout(3_000),
+        );
+
+        const [speculative] = await runsFor('SPECULATE01');
+        await vi.waitFor(() => {
+          expect(isProcessRunning(speculative?.pid ?? 0)).toBe(false);
+        });
+        await requested.close();
+        await playing.close();
       });
 
       it('does nothing when the provider is disabled', async () => {

@@ -40,14 +40,14 @@ function methods(interaction: { calls: Call[] }): string[] {
 
 describe('Responder', () => {
   let posted: string[];
+  let postedTo: string[];
   let publicMessages: unknown[];
-  let chatChannel: string | null;
 
   beforeEach(() => {
     vi.useFakeTimers();
     posted = [];
+    postedTo = [];
     publicMessages = [];
-    chatChannel = 'chat';
   });
 
   afterEach(() => {
@@ -62,11 +62,11 @@ describe('Responder', () => {
     return new Responder(interaction, {
       kind,
       ackAfterMs: 1_500,
-      postToChat: (text) => {
+      postToChannel: (channelId, text) => {
         posted.push(text);
+        postedTo.push(channelId);
         return Promise.resolve(postWorks);
       },
-      chatChannelId: () => chatChannel,
       onPublicMessage: (message) => {
         publicMessages.push(message);
       },
@@ -128,16 +128,15 @@ describe('Responder', () => {
       expect(methods(interaction)).not.toContain('followUp');
     });
 
-    it('keeps a private copy when the chat is another channel', async () => {
-      chatChannel = 'music';
+    it('posts a slow result into the channel where the command was used', async () => {
       const interaction = fakeInteraction('general');
       const r = responder(interaction, 'command');
       await vi.advanceTimersByTimeAsync(1_500);
 
       await r.publish('⏭ Пропущено.');
 
-      expect(methods(interaction)).toEqual(['deferReply', 'editReply']);
-      expect(interaction.calls[1]?.options).toMatchObject({ content: '⏭ Пропущено.' });
+      expect(postedTo).toEqual(['general']);
+      expect(methods(interaction)).toEqual(['deferReply', 'deleteReply']);
     });
 
     it('reports failure when the chat message cannot be sent, so the caller answers privately', async () => {

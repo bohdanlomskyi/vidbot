@@ -13,7 +13,7 @@ import type { AccessAction, AccessDecision } from '../security/accessPolicy.js';
 import { AppError } from '../utils/errors.js';
 import { describeEnqueue } from './enqueueReply.js';
 import { assertBotCanUse, requireGuildMember, type AppServices } from './context.js';
-import { Responder, type PrivatePayload } from './responder.js';
+import { privateBody, Responder, type PrivatePayload } from './responder.js';
 
 /** Everything an action needs: the services, the guild, the member, and ways to answer. */
 export interface ActionContext {
@@ -57,8 +57,7 @@ async function interactiveContext(
   // Created first, so its timer counts from when the interaction arrived.
   const responder = new Responder(interaction, {
     kind,
-    postToChat: (text) => services.announcer.post(guildKey, text),
-    chatChannelId: () => services.announcer.channelFor(guildKey),
+    postToChannel: (channelId, text) => services.announcer.postTo(guildKey, channelId, text),
     onPublicMessage: (message) => {
       services.panel.notePosted(guildKey, message.channelId, message.messageId);
     },
@@ -92,13 +91,7 @@ export async function privateButtonContext(
     member,
     guildId,
     reply: async (payload) => {
-      await interaction.editReply({
-        content: '',
-        embeds: [],
-        components: [],
-        ...(typeof payload === 'string' ? { content: payload } : payload),
-        allowedMentions: { parse: [] },
-      });
+      await interaction.editReply(privateBody(payload));
     },
     publish: async (content) => {
       if (!(await services.announcer.post(guildId, content))) {

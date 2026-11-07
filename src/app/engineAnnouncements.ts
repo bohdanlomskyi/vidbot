@@ -7,11 +7,6 @@ export interface Announcement {
   readonly text: string;
 }
 
-export interface AnnouncementContext {
-  /** The track whose start was announced last in this server, to stay quiet when it repeats. */
-  readonly lastStartedTrackId?: string | null;
-}
-
 /** The line that tells the chat which track plays now. Commands use it too. */
 export function nowPlayingLine(title: string, durationSec: number | null): string {
   return `🎶 Сейчас играет: **${chatTitle(title)}** · \`${formatDuration(durationSec)}\``;
@@ -22,10 +17,7 @@ export function nowPlayingLine(title: string, durationSec: number | null): strin
  * null, because the command already announced itself. A started track is announced with a short
  * message, unless the command that queued it reports the start itself or the track repeats.
  */
-export function describeEngineEvent(
-  event: EngineEvent,
-  context: AnnouncementContext = {},
-): Announcement | null {
+export function describeEngineEvent(event: EngineEvent): Announcement | null {
   switch (event.type) {
     case 'track_failed':
       return {
@@ -71,7 +63,7 @@ export function describeEngineEvent(
     case 'moved':
       return { kind: 'important', text: `↔️ Меня переместили в канал <#${event.channelId}>.` };
     case 'track_started':
-      if (event.announcedByCaller || event.track.id === context.lastStartedTrackId) {
+      if (event.announcedByCaller || event.repeat) {
         return null;
       }
       return {

@@ -29,6 +29,8 @@ export interface CurrentPlayback {
   playingSince: number | null;
   /** True when a command waits for this start and tells the chat about it itself. */
   announcedByCaller: boolean;
+  /** True when the track starts again because track repeat is on. */
+  readonly repeat: boolean;
 }
 
 /**
@@ -41,6 +43,8 @@ export class GuildSession {
   voiceChannelId: string | null = null;
   current: CurrentPlayback | null = null;
   pendingReplay: Track | null = null;
+  /** True when pendingReplay is there because track repeat is on, not because of a restart. */
+  pendingRepeat = false;
   /** Tracks that played before the current one, newest last. Used by "previous". */
   readonly played: Track[] = [];
   loop: LoopMode = 'off';

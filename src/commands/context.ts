@@ -24,6 +24,7 @@ import type { PanelManager } from '../discord/ui/panelManager.js';
 import type { SlidingWindowRateLimiter } from '../utils/rateLimiter.js';
 import { AppError } from '../utils/errors.js';
 import type { PendingPlaylists } from './pendingPlaylists.js';
+import { privateBody } from './responder.js';
 
 /** Everything a command or interaction handler may use. Built once at startup. */
 export interface AppServices {
@@ -97,12 +98,7 @@ export async function sayEphemeral(
   interaction: ChatInputCommandInteraction,
   content: string,
 ): Promise<void> {
-  await interaction.editReply({
-    content,
-    embeds: [],
-    components: [],
-    allowedMentions: { parse: [] },
-  });
+  await interaction.editReply(privateBody(content));
 }
 
 export async function deferEphemeral(interaction: ChatInputCommandInteraction): Promise<void> {

@@ -71,7 +71,9 @@ const NOTHING_PLAYING = 'Сейчас ничего не играет.';
 const PREVIOUS_RESTART_MS = 5_000;
 const PLAYED_KEPT = 20;
 /** The next track starts opening this long before the current one ends, so there is no gap. */
-const PRELOAD_LEAD_MS = 30_000;
+const PRELOAD_LEAD_MS = 15_000;
+/** How soon a declined early open is asked for again. */
+const PRELOAD_RETRY_MS = 5_000;
 
 /** What opening a source produced. Loading runs outside the guild lock. */
 type LoadOutcome =
@@ -237,6 +239,7 @@ export class MusicEngine {
         session.queue.pushFront(current);
       }
       session.pendingReplay = before ?? null;
+      session.pendingRepeat = false;
       this.playNext(session);
       this.afterChange(session);
       return 'previous';
@@ -498,7 +501,9 @@ export class MusicEngine {
   private playNext(session: GuildSession): CurrentPlayback | null {
     for (;;) {
       const replay = session.pendingReplay;
+      const repeat = replay !== null && session.pendingRepeat;
       session.pendingReplay = null;
+      session.pendingRepeat = false;
       const track = replay ?? session.queue.shift();
       if (track === undefined) {
         this.setState(session, 'idle');
@@ -509,7 +514,7 @@ export class MusicEngine {
         this.reportFailure(session, track, 'этот источник сейчас недоступен.');
         continue;
       }
-      return this.beginLoading(session, track, provider);
+      return this.beginLoading(session, track, provider, repeat);
     }
   }
 
@@ -517,6 +522,7 @@ export class MusicEngine {
     session: GuildSession,
     track: Track,
     provider: AudioProvider,
+    repeat: boolean,
   ): CurrentPlayback {
     const playback: CurrentPlayback = {
       track,
@@ -529,6 +535,7 @@ export class MusicEngine {
       playedMs: 0,
       playingSince: null,
       announcedByCaller: false,
+      repeat,
     };
     session.current = playback;
     session.votes.clear();
@@ -619,6 +626,7 @@ export class MusicEngine {
       await playable.close();
       session.current = null;
       session.pendingReplay = playback.track;
+      session.pendingRepeat = playback.repeat;
       playback.start.resolve({ outcome: 'deferred' });
       this.afterChange(session);
       return;
@@ -680,6 +688,7 @@ export class MusicEngine {
       }
       if (session.loop === 'track') {
         session.pendingReplay = playback.track;
+        session.pendingRepeat = true;
       } else if (session.loop === 'queue') {
         session.queue.pushBack(playback.track);
       }
@@ -708,6 +717,7 @@ export class MusicEngine {
       guildId: session.guildId,
       track: playback.track,
       announcedByCaller: playback.announcedByCaller,
+      repeat: playback.repeat,
     });
     this.afterChange(session);
   }
@@ -719,6 +729,7 @@ export class MusicEngine {
       throw new AppError('NOT_FOUND', NOTHING_PLAYING);
     }
     session.pendingReplay = track;
+    session.pendingRepeat = false;
     this.playNext(session);
     this.afterChange(session);
   }
@@ -910,6 +921,7 @@ export class MusicEngine {
     await this.discardCurrent(session, false);
     session.queue.clear();
     session.pendingReplay = null;
+    session.pendingRepeat = false;
     this.setState(session, 'idle');
     this.emit({ type: 'left_channel', guildId: session.guildId, reason: 'lost' });
     this.afterChange(session);
@@ -921,6 +933,7 @@ export class MusicEngine {
     await this.discardCurrent(session, false);
     session.queue.clear();
     session.pendingReplay = null;
+    session.pendingRepeat = false;
     session.played.length = 0;
     session.votes.clear();
     const connection = session.connection;
@@ -1039,26 +1052,44 @@ export class MusicEngine {
   private schedulePreload(session: GuildSession): void {
     const playback = session.current;
     const durationSec = playback?.track.durationSec ?? null;
-    if (playback === null || !playback.started || session.state !== 'playing' || durationSec === null) {
+    if (
+      playback === null ||
+      !playback.started ||
+      session.state !== 'playing' ||
+      durationSec === null
+    ) {
       session.timers.cancel('preload');
+      // An early-opened stream may expire during a pause, so it is asked for again afterwards.
+      session.preloadedFor = null;
       return;
     }
     const next = this.upcoming(session, playback.track);
     const provider = next === null ? undefined : this.options.providers(next.source);
     const key = next === null ? null : `${String(playback.token)}:${next.id}`;
-    if (next === null || provider?.preload === undefined || !provider.enabled || key === session.preloadedFor) {
+    if (
+      next === null ||
+      provider?.preload === undefined ||
+      !provider.enabled ||
+      key === session.preloadedFor
+    ) {
       session.timers.cancel('preload');
       return;
     }
-    const remainingMs = durationSec * 1000 - this.elapsedOf(playback);
-    session.timers.replace('preload', Math.max(0, remainingMs - PRELOAD_LEAD_MS), () => {
-      session.preloadedFor = key;
+    const attempt = (): void => {
+      let accepted = false;
       try {
-        provider.preload?.(next);
+        accepted = provider.preload?.(next) === true;
       } catch (error) {
         this.log.warn({ guildId: session.guildId, err: error }, 'Opening the next track early failed');
       }
-    });
+      if (accepted) {
+        session.preloadedFor = key;
+      } else {
+        session.timers.replace('preload', PRELOAD_RETRY_MS, attempt);
+      }
+    };
+    const remainingMs = durationSec * 1000 - this.elapsedOf(playback);
+    session.timers.replace('preload', Math.max(0, remainingMs - PRELOAD_LEAD_MS), attempt);
   }
 
   private elapsedOf(playback: CurrentPlayback): number {

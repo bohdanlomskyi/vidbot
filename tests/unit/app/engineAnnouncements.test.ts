@@ -88,11 +88,12 @@ describe('describeEngineEvent', () => {
       requesterId: 'u1',
       createdAt: 0,
     };
-    const started = (announcedByCaller: boolean): EngineEvent => ({
+    const started = (announcedByCaller: boolean, repeat = false): EngineEvent => ({
       type: 'track_started',
       guildId: GUILD,
       track,
       announcedByCaller,
+      repeat,
     });
 
     it('is announced with its length and who asked for it', () => {
@@ -107,7 +108,7 @@ describe('describeEngineEvent', () => {
     });
 
     it('is not announced again when the same track repeats', () => {
-      expect(describeEngineEvent(started(false), { lastStartedTrackId: 't1' })).toBeNull();
+      expect(describeEngineEvent(started(false, true))).toBeNull();
     });
   });
 

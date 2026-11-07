@@ -61,6 +61,11 @@ export class Announcer {
     if (channelId === null) {
       return false;
     }
+    return this.postTo(guildId, channelId, text);
+  }
+
+  /** Sends the text into a given channel of the server, with the same rules as post(). */
+  async postTo(guildId: string, channelId: string, text: string): Promise<boolean> {
     const now = this.now();
     const previous = this.lastSent.get(guildId);
     if (previous?.text === text && now - previous.at < DUPLICATE_WINDOW_MS) {

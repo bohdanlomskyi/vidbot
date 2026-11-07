@@ -171,8 +171,9 @@ export class PanelManager {
       channel.lastMessageId != null &&
       isNewer(channel.lastMessageId, messageId);
 
+    // A panel left in the previous channel is deleted once the new one is there.
+    const left = moved ? (this.followed.get(guildId) ?? null) : null;
     if (moved) {
-      await this.deleteFollowed(guildId);
       messageId = null;
     }
 
@@ -215,6 +216,9 @@ export class PanelManager {
       // The old panel goes only once the new one is there.
       await channel.messages.delete(messageId).catch(() => undefined);
     }
+    if (left !== null) {
+      await this.deleteMessage(guildId, left);
+    }
   }
 
   /** True when the bot wrote a message into the panel's channel after the panel message. */
@@ -243,17 +247,14 @@ export class PanelManager {
     };
   }
 
-  /** Deletes the followed panel message, wherever it is. A message that is already gone is fine. */
-  private async deleteFollowed(guildId: string): Promise<void> {
-    const current = this.followed.get(guildId);
-    this.followed.delete(guildId);
-    this.shown.delete(guildId);
-    if (current === undefined) {
-      return;
-    }
+  /** Deletes a panel message, wherever it is. A message that is already gone is fine. */
+  private async deleteMessage(
+    guildId: string,
+    message: { readonly channelId: string; readonly messageId: string },
+  ): Promise<void> {
     try {
-      const channel = await this.resolveChannel(guildId, current.channelId);
-      await channel?.messages.delete(current.messageId);
+      const channel = await this.resolveChannel(guildId, message.channelId);
+      await channel?.messages.delete(message.messageId);
     } catch {
       // Deleting is a tidy-up only; a message that cannot be deleted stays as a stale panel.
     }

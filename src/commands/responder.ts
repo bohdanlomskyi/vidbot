@@ -34,10 +34,8 @@ export type ResponderInteraction = Pick<
 
 export interface ResponderOptions {
   readonly kind: 'command' | 'component';
-  /** Sends text into the server's bot chat. True when it was sent. */
-  readonly postToChat: (text: string) => Promise<boolean>;
-  /** The channel postToChat writes to. */
-  readonly chatChannelId: () => string | null;
+  /** Sends text as a normal bot message into the channel. True when it was sent. */
+  readonly postToChannel: (channelId: string, text: string) => Promise<boolean>;
   readonly onPublicMessage?: (message: PublicMessage) => void;
   readonly ackAfterMs?: number;
 }
@@ -52,6 +50,17 @@ export interface ResponderOptions {
 type State = 'none' | 'private' | 'public' | 'acked' | 'removed';
 
 const responders = new WeakMap<object, Responder>();
+
+/** A private answer that replaces whatever the earlier one showed, and mentions nobody. */
+export function privateBody(payload: PrivatePayload) {
+  return {
+    content: '',
+    embeds: [],
+    components: [],
+    ...(typeof payload === 'string' ? { content: payload } : payload),
+    allowedMentions: { parse: [] as [] },
+  };
+}
 
 /** The responder handling this interaction, if a handler created one. Used to report errors. */
 export function responderFor(interaction: object): Responder | undefined {
@@ -96,13 +105,7 @@ export class Responder {
   /** An answer only the member sees. */
   private(payload: PrivatePayload): Promise<void> {
     this.answering();
-    const body = {
-      content: '',
-      embeds: [],
-      components: [],
-      ...(typeof payload === 'string' ? { content: payload } : payload),
-      allowedMentions: { parse: [] as [] },
-    };
+    const body = privateBody(payload);
     return this.serial(async () => {
       switch (this.state) {
         case 'none':
@@ -139,24 +142,13 @@ export class Responder {
           return false;
         }
       }
-      if (!(await this.options.postToChat(text))) {
+      // The answer stays where the member used the command, whether it was quick or slow.
+      if (!(await this.options.postToChannel(this.interaction.channelId, text))) {
         return false;
       }
       if (this.state === 'private') {
-        if (this.options.chatChannelId() === this.interaction.channelId) {
-          await this.interaction.deleteReply().catch(() => undefined);
-          this.state = 'removed';
-        } else {
-          // The message went to another channel; the member still sees the result here.
-          await this.interaction
-            .editReply({
-              content: text,
-              embeds: [],
-              components: [],
-              allowedMentions: { parse: [] },
-            })
-            .catch(() => undefined);
-        }
+        await this.interaction.deleteReply().catch(() => undefined);
+        this.state = 'removed';
       }
       return true;
     });

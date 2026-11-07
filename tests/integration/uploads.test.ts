@@ -148,6 +148,38 @@ describe('UploadService', () => {
     expect(stored.relativePath).toBe('uploads/song (2).wav');
   });
 
+  it('keeps both files when two different files with the same name arrive at the same time', async () => {
+    const changed = Buffer.from(tone);
+    changed[changed.length - 1] = (changed[changed.length - 1] ?? 0) ^ 0xff;
+    // Both uploads finish their checks together, so both pick a name at the same moment.
+    let arrived = 0;
+    const together = Promise.withResolvers<undefined>();
+    const bodies = [tone, changed];
+    const shared = service(tone, {
+      fetchImpl: () => Promise.resolve(new Response(new Uint8Array(bodies.shift() ?? tone))),
+      probe: async (file) => {
+        const result = await probeAudioFile(FFPROBE, file, 20_000);
+        arrived += 1;
+        if (arrived === 2) {
+          together.resolve(undefined);
+        }
+        await together.promise;
+        return result;
+      },
+    });
+
+    const stored = await Promise.all([
+      shared.ingest({ name: 'song.wav', size: tone.length, url: URL }, signal()),
+      shared.ingest({ name: 'song.wav', size: changed.length, url: URL }, signal()),
+    ]);
+
+    expect(new Set(stored.map((item) => item.relativePath)).size).toBe(2);
+    expect((await readdir(path.join(music, 'uploads'))).sort()).toEqual([
+      'song (2).wav',
+      'song.wav',
+    ]);
+  });
+
   it('cannot be tricked into writing outside the uploads folder', async () => {
     const stored = await service(tone).ingest(
       { name: '../../..\\evil/../name.wav', size: tone.length, url: URL },

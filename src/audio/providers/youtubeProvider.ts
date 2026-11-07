@@ -205,7 +205,7 @@ export class YouTubeExperimentalProvider implements AudioProvider {
     let opened = this.takePrepared(track.sourceRef);
     if (opened === null) {
       // The slot is held for the whole playback. Waiting for it ends when the track is cancelled.
-      const release = await this.streamSlots.acquire(signal);
+      const release = (await this.freeSlot()) ?? (await this.streamSlots.acquire(signal));
       opened = this.openProcess(url, release, false);
     }
     try {
@@ -222,21 +222,25 @@ export class YouTubeExperimentalProvider implements AudioProvider {
    * free stream slot only; with none free, or with the provider off, it does nothing. An unused
    * stream is closed after a while and its slot freed.
    */
-  preload(track: Track): void {
-    if (!this.enabled || this.prepared.has(track.sourceRef) || this.breaker.isOpen(this.now())) {
-      return;
+  preload(track: Track): boolean {
+    if (this.prepared.has(track.sourceRef)) {
+      return true;
+    }
+    if (!this.enabled || this.breaker.isOpen(this.now())) {
+      return false;
     }
     let url: string;
     try {
       url = this.canonicalFor(track);
     } catch {
-      return;
+      return false;
     }
     const release = this.streamSlots.tryAcquire();
     if (release === null) {
-      return;
+      return false;
     }
-    this.keepPrepared(track.sourceRef, this.openProcess(url, release, false), track);
+    this.keepPrepared(track.sourceRef, this.openProcess(url, release, false), track, true);
+    return true;
   }
 
   async dispose(): Promise<void> {
@@ -287,7 +291,7 @@ export class YouTubeExperimentalProvider implements AudioProvider {
     if (existing !== undefined) {
       return existing.draft;
     }
-    const release = this.streamSlots.tryAcquire();
+    const release = await this.freeSlot();
     if (release === null) {
       return null;
     }
@@ -307,12 +311,34 @@ export class YouTubeExperimentalProvider implements AudioProvider {
     }
   }
 
-  private keepPrepared(id: string, opened: OpenedStream, draft: TrackDraft): void {
+  /**
+   * A stream slot for a track someone asked for: a free one, or else one taken back from a track
+   * that was only opened early in case it plays next. Null when every slot plays something.
+   */
+  private async freeSlot(): Promise<(() => void) | null> {
+    const free = this.streamSlots.tryAcquire();
+    if (free !== null) {
+      return free;
+    }
+    const speculative = [...this.prepared].find(([, entry]) => entry.speculative);
+    if (speculative === undefined) {
+      return null;
+    }
+    await this.dropPrepared(speculative[0]);
+    return this.streamSlots.tryAcquire();
+  }
+
+  private keepPrepared(
+    id: string,
+    opened: OpenedStream,
+    draft: TrackDraft,
+    speculative = false,
+  ): void {
     const timer = setTimeout(() => {
       void this.dropPrepared(id);
     }, this.options.preparedTtlMs ?? PREPARED_TTL_MS);
     timer.unref();
-    this.prepared.set(id, { opened, draft, timer });
+    this.prepared.set(id, { opened, draft, timer, speculative });
     // A process that dies while it waits is of no use to the player.
     void opened.child.exit.then((exit) => {
       if (
@@ -526,6 +552,8 @@ interface PreparedStream {
   readonly opened: OpenedStream;
   readonly draft: TrackDraft;
   readonly timer: NodeJS.Timeout;
+  /** Opened early in case it plays next. Its slot is given up when a requested track needs one. */
+  readonly speculative: boolean;
 }
 
 function toVideoDraft(link: YouTubeLink, metadata: VideoMetadata): TrackDraft {

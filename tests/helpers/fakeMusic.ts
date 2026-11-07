@@ -171,9 +171,12 @@ export class FakeProvider implements AudioProvider {
   readonly signals = new Map<string, AbortSignal>();
   /** Titles the engine asked to open early, in order. */
   readonly preloaded: string[] = [];
+  /** Whether an early open is accepted, as with a free stream slot. */
+  acceptPreload = true;
 
-  preload(track: Track): void {
+  preload(track: Track): boolean {
     this.preloaded.push(track.title);
+    return this.acceptPreload;
   }
 
   /** Makes the next open of `title` wait until the returned function is called. */

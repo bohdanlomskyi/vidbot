@@ -262,8 +262,8 @@ describe('PanelManager', () => {
       expect(settings.setPanel).not.toHaveBeenCalled();
     });
 
-    it('moves the panel when a command is used in another channel', async () => {
-      const { panel, first, second } = followed();
+    it('moves the panel when a command is used in another channel, sending before deleting', async () => {
+      const { panel, first, second, sent, order } = followed();
       panel.follow('guild-1', first.id);
       panel.requestRefresh('guild-1');
       await wait(20);
@@ -274,6 +274,21 @@ describe('PanelManager', () => {
 
       expect(first.messages.delete).toHaveBeenCalledTimes(1);
       expect(second.send).toHaveBeenCalledTimes(1);
+      expect(order.slice(1)).toEqual([`send ${sent[1] ?? ''}`, `delete ${sent[0] ?? ''}`]);
+    });
+
+    it('keeps the old panel when the new channel refuses the message', async () => {
+      const { panel, first, second } = followed();
+      panel.follow('guild-1', first.id);
+      panel.requestRefresh('guild-1');
+      await wait(20);
+      second.send.mockImplementationOnce(() => Promise.reject(new Error('Missing Permissions')));
+
+      panel.follow('guild-1', second.id);
+      panel.requestRefresh('guild-1');
+      await wait(20);
+
+      expect(first.messages.delete).not.toHaveBeenCalled();
     });
 
     it('sends the panel again at the bottom when asked to, replacing the old message', async () => {

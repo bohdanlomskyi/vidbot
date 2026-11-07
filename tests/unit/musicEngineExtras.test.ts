@@ -59,7 +59,7 @@ describe('MusicEngine extras', () => {
       await harness.engine.enqueue(request(['A', 'B']));
       await startPlaying(harness);
 
-      await vi.advanceTimersByTimeAsync(169_000);
+      await vi.advanceTimersByTimeAsync(184_000);
       expect(preloaded(harness)).toEqual([]);
       await vi.advanceTimersByTimeAsync(1_000);
       expect(preloaded(harness)).toEqual(['B']);
@@ -68,11 +68,37 @@ describe('MusicEngine extras', () => {
     it('opens the next track only once, whatever else changes', async () => {
       await harness.engine.enqueue(request(['A', 'B']));
       await startPlaying(harness);
-      await vi.advanceTimersByTimeAsync(185_000);
+      await vi.advanceTimersByTimeAsync(190_000);
       await harness.engine.setVolume('g1', 50);
       await vi.advanceTimersByTimeAsync(1_000);
 
       expect(preloaded(harness)).toEqual(['B']);
+    });
+
+    it('asks again a few seconds later when the provider could not open it', async () => {
+      harness.provider.acceptPreload = false;
+      await harness.engine.enqueue(request(['A', 'B']));
+      await startPlaying(harness);
+      await vi.advanceTimersByTimeAsync(185_000);
+      expect(preloaded(harness)).toEqual(['B']);
+
+      harness.provider.acceptPreload = true;
+      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      expect(preloaded(harness)).toEqual(['B', 'B']);
+    });
+
+    it('asks again after a pause, since an early-opened stream may have expired meanwhile', async () => {
+      await harness.engine.enqueue(request(['A', 'B']));
+      await startPlaying(harness);
+      await vi.advanceTimersByTimeAsync(190_000);
+      await harness.engine.pause('g1');
+      await vi.advanceTimersByTimeAsync(60_000);
+      await harness.engine.resume('g1');
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(preloaded(harness)).toEqual(['B', 'B']);
     });
 
     it('waits while the track is paused', async () => {
@@ -90,7 +116,7 @@ describe('MusicEngine extras', () => {
       await startPlaying(harness);
       await harness.engine.enqueue(request(['X'], { playNext: true }));
 
-      await vi.advanceTimersByTimeAsync(171_000);
+      await vi.advanceTimersByTimeAsync(186_000);
 
       expect(preloaded(harness)).toEqual(['X']);
     });
@@ -100,7 +126,7 @@ describe('MusicEngine extras', () => {
       await startPlaying(harness);
       await harness.engine.setLoop('g1', 'track');
 
-      await vi.advanceTimersByTimeAsync(171_000);
+      await vi.advanceTimersByTimeAsync(186_000);
 
       expect(preloaded(harness)).toEqual(['A']);
     });
@@ -135,6 +161,25 @@ describe('MusicEngine extras', () => {
         ['A', true],
         ['B', false],
       ]);
+      expect(harness.events.some((event) => event.type === 'track_started' && event.repeat)).toBe(
+        false,
+      );
+    });
+
+    it('marks a start that repeats the track under track repeat, and nothing else', async () => {
+      harness.setListeners(1);
+      await harness.engine.enqueue(request(['A']));
+      await startPlaying(harness);
+      await harness.engine.setLoop('g1', 'track');
+      await endTrack(harness);
+      await harness.engine.restart('g1');
+      await flush();
+      await startPlaying(harness);
+
+      const repeats = harness.events.flatMap((event) =>
+        event.type === 'track_started' ? [event.repeat] : [],
+      );
+      expect(repeats).toEqual([false, true, false]);
     });
 
     it('does not mark a track added while another one plays', async () => {

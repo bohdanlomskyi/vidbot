@@ -64,3 +64,15 @@ describe('SourceRouter.wantsSearch', () => {
     expect(router().wantsSearch('x'.repeat(600), ALL)).toBe(false);
   });
 });
+
+describe('SourceRouter.goesToLibrary', () => {
+  it('is true only for input the music library would look up', () => {
+    const r = router();
+
+    expect(r.goesToLibrary('my song')).toBe(true);
+    expect(r.goesToLibrary('lib-0123456789ab')).toBe(true);
+    expect(r.goesToLibrary('radio-one')).toBe(false);
+    expect(r.goesToLibrary('https://www.youtube.com/watch?v=lhCPiauHI-g')).toBe(false);
+    expect(r.goesToLibrary('https://example.com/song.mp3')).toBe(false);
+  });
+});

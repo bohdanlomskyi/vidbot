@@ -133,8 +133,6 @@ export async function createApp(config: AppConfig, logger: Logger): Promise<App>
       panelHolder.panel?.notePosted(guildId, channelId, messageId);
     },
   });
-  /** The track whose start was announced last, per guild, so a repeating track is not announced again. */
-  const lastStarted = new Map<string, string>();
   const engine = new MusicEngine({
     voice: new DiscordVoicePort(client, logger),
     createPlayer: () => new DiscordAudioPlayer(opusEncoder),
@@ -146,14 +144,7 @@ export async function createApp(config: AppConfig, logger: Logger): Promise<App>
     },
     onEvent: (event) => {
       handleEngineEvent(event, { history, logger, now: () => Date.now() });
-      const note = describeEngineEvent(event, {
-        lastStartedTrackId: lastStarted.get(event.guildId) ?? null,
-      });
-      if (event.type === 'track_started') {
-        lastStarted.set(event.guildId, event.track.id);
-      } else if (event.type === 'left_channel') {
-        lastStarted.delete(event.guildId);
-      }
+      const note = describeEngineEvent(event);
       if (note !== null) {
         void announcer.say(event.guildId, note.kind, note.text);
       }

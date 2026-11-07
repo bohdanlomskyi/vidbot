@@ -52,6 +52,8 @@ export interface StoredUpload {
  */
 export class UploadService {
   private readonly fetchImpl: typeof fetch;
+  /** Picking a name and checking the quota run one upload at a time, so two cannot collide. */
+  private naming: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly options: UploadServiceOptions) {
     this.fetchImpl = options.fetchImpl ?? fetch;
@@ -73,10 +75,7 @@ export class UploadService {
     const folder = path.join(this.options.musicDir, UPLOADS_FOLDER);
     await mkdir(folder, { recursive: true });
     if ((await folderSize(folder)) + Math.max(0, file.size) > this.options.quotaBytes) {
-      throw new AppError(
-        'QUOTA_EXCEEDED',
-        'Место для загруженных файлов закончилось. Попросите администратора освободить его.',
-      );
+      throw quotaExceeded();
     }
 
     const partial = path.join(folder, `.incoming-${randomBytes(6).toString('hex')}.part`);
@@ -136,23 +135,46 @@ export class UploadService {
       throw error;
     }
 
-    for (let attempt = 1; attempt <= MAX_SAME_NAMES; attempt += 1) {
-      const name = `${base}${attempt === 1 ? '' : ` (${String(attempt)})`}${extension}`;
-      const target = path.join(folder, name);
-      const existing = await stat(target).catch(() => null);
-      if (existing === null) {
-        await rename(probed, target);
-        await this.options.refresh();
-        return { relativePath: `${UPLOADS_FOLDER}/${name}`, durationSec };
-      }
-      if (existing.size > 0 && (await sameContent(target, digest))) {
+    return this.oneAtATime(async () => {
+      // Other uploads may have landed meanwhile. The checked file itself is in the folder already.
+      if ((await folderSize(folder)) > this.options.quotaBytes) {
         await rm(probed, { force: true });
-        return { relativePath: `${UPLOADS_FOLDER}/${name}`, durationSec };
+        throw quotaExceeded();
       }
-    }
-    await rm(probed, { force: true });
-    throw new AppError('INVALID_INPUT', 'Слишком много файлов с таким именем. Переименуйте файл.');
+      for (let attempt = 1; attempt <= MAX_SAME_NAMES; attempt += 1) {
+        const name = `${base}${attempt === 1 ? '' : ` (${String(attempt)})`}${extension}`;
+        const target = path.join(folder, name);
+        const existing = await stat(target).catch(() => null);
+        if (existing === null) {
+          await rename(probed, target);
+          await this.options.refresh();
+          return { relativePath: `${UPLOADS_FOLDER}/${name}`, durationSec };
+        }
+        if (existing.size > 0 && (await sameContent(target, digest))) {
+          await rm(probed, { force: true });
+          return { relativePath: `${UPLOADS_FOLDER}/${name}`, durationSec };
+        }
+      }
+      await rm(probed, { force: true });
+      throw new AppError(
+        'INVALID_INPUT',
+        'Слишком много файлов с таким именем. Переименуйте файл.',
+      );
+    });
   }
+
+  private oneAtATime<T>(work: () => Promise<T>): Promise<T> {
+    const next = this.naming.then(work);
+    this.naming = next.catch(() => undefined);
+    return next;
+  }
+}
+
+function quotaExceeded(): AppError {
+  return new AppError(
+    'QUOTA_EXCEEDED',
+    'Место для загруженных файлов закончилось. Попросите администратора освободить его.',
+  );
 }
 
 function assertAttachmentUrl(raw: string): void {

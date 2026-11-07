@@ -38,7 +38,13 @@ describe('handleEngineEvent', () => {
     const d = deps();
 
     handleEngineEvent(
-      { type: 'track_started', guildId: 'guild-1', track: track(), announcedByCaller: false },
+      {
+        type: 'track_started',
+        guildId: 'guild-1',
+        track: track(),
+        announcedByCaller: false,
+        repeat: false,
+      },
       d,
     );
 
@@ -57,7 +63,13 @@ describe('handleEngineEvent', () => {
 
     expect(() => {
       handleEngineEvent(
-        { type: 'track_started', guildId: 'guild-1', track: track(), announcedByCaller: false },
+        {
+          type: 'track_started',
+          guildId: 'guild-1',
+          track: track(),
+          announcedByCaller: false,
+          repeat: false,
+        },
         d,
       );
     }).not.toThrow();

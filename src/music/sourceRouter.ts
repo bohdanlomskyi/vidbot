@@ -50,6 +50,21 @@ export class SourceRouter {
     return this.deps.libraryHasTitle?.(input) !== true;
   }
 
+  /** True when resolve() would look the input up in the music library. Synchronous, no I/O. */
+  goesToLibrary(rawInput: string): boolean {
+    let input: string;
+    try {
+      input = normalize(rawInput);
+    } catch {
+      return false;
+    }
+    return (
+      !this.deps.youtube.canHandle(input) &&
+      !URL_LIKE.test(input) &&
+      !this.deps.streams.canHandle(input)
+    );
+  }
+
   async resolve(
     rawInput: string,
     allowed: readonly SourceKind[],

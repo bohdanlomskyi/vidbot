@@ -71,6 +71,8 @@ export type EngineEvent =
       readonly track: Track;
       /** The command that queued the track waits for its start and reports it itself. */
       readonly announcedByCaller: boolean;
+      /** The same track starts again because track repeat is on. */
+      readonly repeat: boolean;
     }
   | {
       readonly type: 'track_failed';

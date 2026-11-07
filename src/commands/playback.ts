@@ -98,7 +98,11 @@ async function startPlayback(
   try {
     drafts = await resolveInput(ctx, input, settings.allowedSources, willPlayNow);
   } catch (error) {
-    if (!isAppError(error) || error.code !== 'NOT_FOUND') {
+    if (
+      !isAppError(error) ||
+      error.code !== 'NOT_FOUND' ||
+      !ctx.services.sources.goesToLibrary(input)
+    ) {
       throw error;
     }
     // A file may have just been copied into the music folder: look again after a rescan.
